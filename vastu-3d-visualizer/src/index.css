@@ -23,6 +23,21 @@ html, body {
   box-shadow: 0 4px 20px rgba(0,0,0,0.3);
 }
 
+.top-center-panel {
+  position: fixed;
+  z-index: 10;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(24, 27, 32, 0.95);
+  border: 1px solid #454a52;
+  border-radius: 12px;
+  padding: 8px 14px;
+  display: flex;
+  gap: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
 .ui-panel h2 { margin: 0 0 5px; font-size: 18px; }
 .ui-panel .sub { font-size: 12px; color: #bfc4cb; line-height: 1.45; margin-bottom: 10px; }
 

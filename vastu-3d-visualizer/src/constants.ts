@@ -15,7 +15,6 @@ export const MAT = {
 };
 
 export const initialRoomState = [
-  { id: 0, name: "PARKING", cx: -13, cz: -13, w: 14, d: 4, mat: MAT.parking, type: "parking" },
   { id: 1, name: "PARKING", cx: -10, cz: -6.5, w: 8, d: 9, mat: MAT.parking, type: "parking" },
   { id: 2, name: "STAIRCASE", cx: -17, cz: -6.5, w: 6, d: 9, mat: MAT.wall2, type: "staircase" },
   { id: 3, name: "LIVING ROOM\n10 × 17 ft", cx: 0, cz: -8.5, w: 12, d: 13, mat: MAT.living, type: "living" },
@@ -32,16 +31,4 @@ export const initialRoomState = [
   { id: 14, name: "ELDER TOILET\n8 × 5 ft", cx: 17.5, cz: -12, w: 5, d: 6, mat: MAT.wet, type: "toilet" },
 ];
 
-export const checkVastu = (r: any) => {
-  const isSW = r.cx < 0 && r.cz < 0;
-  const isSE = r.cx > 0 && r.cz < 0;
-  const isNE = r.cx > 0 && r.cz > 0;
-  const isNW = r.cx < 0 && r.cz > 0;
 
-  if (r.name.includes("MASTER BEDROOM") && !isSW) return "Vastu: Move to South-West";
-  if (r.name.includes("KITCHEN") && !isSE) return "Vastu: Move to South-East";
-  if (r.name.includes("POOJA") && !isNE) return "Vastu: Move to North-East";
-  if (r.name.includes("TOILET") && (isNE || isSW)) return "Vastu: Avoid NE or SW";
-  if (r.name.includes("BEDROOM") && !r.name.includes("MASTER") && isSE) return "Vastu: Avoid Bedroom in SE";
-  return null;
-};

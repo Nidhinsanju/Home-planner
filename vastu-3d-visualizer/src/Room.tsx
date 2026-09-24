@@ -1,8 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
-import { Text, Outlines } from '@react-three/drei';
+import { Html, Outlines } from '@react-three/drei';
 import * as THREE from 'three';
-import { MAT, checkVastu } from './constants';
+import { MAT } from './constants';
 
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
@@ -12,7 +12,6 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
   const [isDragging, setIsDragging] = useState(false);
   const dragOffset = useRef(new THREE.Vector3());
 
-  const vError = checkVastu(room);
 
   // R3F doesn't have a direct equivalent for global pointer events capturing while dragging outside mesh,
   // so we bind to window via useFrame if dragging.
@@ -90,7 +89,7 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
       newRooms[bIndex] = b;
 
       setRooms(newRooms);
-      onSelect(null, "Rooms interchanged! Red borders show Vastu violations.");
+      onSelect(null, "Rooms interchanged!");
     } else {
       onSelect(null, "Room returned to original place.");
     }
@@ -109,39 +108,12 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
       >
         <boxGeometry args={[room.w, 0.16, room.d]} />
         <meshStandardMaterial color={room.mat.color} roughness={room.mat.roughness} transparent={isDragging} opacity={isDragging ? 0.6 : 1.0} />
-        {vError && <Outlines thickness={0.15} color="red" />}
-        {isSelected && !vError && <Outlines thickness={0.15} color="yellow" />}
+        {isSelected && <Outlines thickness={0.15} color="yellow" />}
       </mesh>
 
       {/* Label */}
-      <group position={[room.cx, 3.2, room.cz]}>
-         <Text
-            color="#fff"
-            fontSize={1.2}
-            maxWidth={room.w}
-            lineHeight={1.2}
-            textAlign="center"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.1}
-            outlineColor="#000"
-         >
-            {room.name}
-         </Text>
-      </group>
+      <SpriteLabel text={room.name} x={room.cx} z={room.cz} />
 
-      {/* Vastu Error Label */}
-      {vError && (
-         <group position={[room.cx, 7.2, room.cz]}>
-            <mesh>
-               <planeGeometry args={[12, 2.5]} />
-               <meshBasicMaterial color="#dc1e1e" transparent opacity={0.9} />
-            </mesh>
-            <Text position={[0, 0, 0.01]} color="#fff" fontSize={0.9} fontWeight="bold">
-               {vError}
-            </Text>
-         </group>
-      )}
 
       {/* Furniture */}
       <Furniture room={room} />
@@ -190,4 +162,47 @@ const Furniture = ({ room }: { room: any }) => {
   }
 
   return null;
+};
+
+const SpriteLabel = ({ text, x, z }: { text: string, x: number, z: number }) => {
+  const texture = React.useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = 600;
+    c.height = 120;
+    const q = c.getContext("2d");
+    if (q) {
+      q.fillStyle = "rgba(85, 90, 95, 0.9)";
+      if (q.roundRect) {
+         q.roundRect(8, 8, 584, 104, 18);
+      } else {
+         q.fillRect(8, 8, 584, 104);
+      }
+      q.fill();
+      q.fillStyle = "#fff";
+      q.textAlign = "center";
+      q.textBaseline = "middle";
+      const lines = text.split('\n');
+      if (lines.length === 1) {
+        q.font = "bold 30px Arial";
+        q.fillText(lines[0], 300, 60);
+      } else {
+        q.font = "bold 28px Arial";
+        q.fillText(lines[0], 300, 45);
+        q.font = "normal 22px Arial";
+        q.fillStyle = "#cbd0d6";
+        q.fillText(lines[1], 300, 80);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
+  }, [text]);
+
+  // Reduced scale as requested
+  return (
+    <sprite position={[x, 3.2, z]} scale={[3.0, 0.6, 1]}>
+      <spriteMaterial map={texture} transparent />
+    </sprite>
+  );
 };

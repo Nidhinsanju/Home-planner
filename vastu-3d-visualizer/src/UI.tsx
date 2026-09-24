@@ -16,17 +16,19 @@ type AppState = {
 
 export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsOn, selectedText, setView, onUndo, canUndo, onRedo, canRedo }) => {
   return (
-    <div className="ui-panel">
+    <>
+      <div className="top-center-panel">
+        <button className="ui-btn" onClick={onUndo} disabled={!canUndo} style={{ opacity: canUndo ? 1 : 0.5, margin: 0 }}>↶ Undo</button>
+        <button className="ui-btn" onClick={onRedo} disabled={!canRedo} style={{ opacity: canRedo ? 1 : 0.5, margin: 0 }}>Redo ↷</button>
+      </div>
+      <div className="ui-panel">
       <h2>Ground Floor · 40 × 30 ft</h2>
       <div className="sub">
-        Rebuilt in React + R3F: Interactive spatial concept with dynamic room swapping and Vastu validation.
+        Rebuilt in React + R3F: Interactive spatial concept with dynamic room swapping.
       </div>
       
       <button className="ui-btn" onClick={() => setView('3d')}>3D View</button>
       <button className="ui-btn" onClick={() => setView('top')}>Top View</button>
-      <br />
-      <button className="ui-btn" onClick={onUndo} disabled={!canUndo} style={{ opacity: canUndo ? 1 : 0.5 }}>Undo</button>
-      <button className="ui-btn" onClick={onRedo} disabled={!canRedo} style={{ opacity: canRedo ? 1 : 0.5 }}>Redo</button>
       <button className="ui-btn dark" onClick={() => setRoofOn(!roofOn)}>
         {roofOn ? "Hide Roof/Walls" : "Show Roof/Walls"}
       </button>
@@ -44,6 +46,7 @@ export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsO
       </div>
       <div className="hint">Drag = rotate · Wheel = zoom · Right-drag = pan</div>
     </div>
+    </>
   );
 };
 
