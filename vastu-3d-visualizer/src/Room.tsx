@@ -8,7 +8,7 @@ const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) => {
   const meshRef = useRef<THREE.Mesh>(null);
-  const { camera, raycaster, pointer } = useThree();
+  const { camera, raycaster, pointer, controls } = useThree();
   const [isDragging, setIsDragging] = useState(false);
   const dragOffset = useRef(new THREE.Vector3());
 
@@ -31,6 +31,7 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
 
   const handlePointerDown = (e: any) => {
     e.stopPropagation();
+    if (controls) (controls as any).enabled = false;
     onSelect(room.id, `<b>${room.name.split('\n')[0]}</b> picked up. Drag and drop onto another room to swap.`);
     setIsDragging(true);
 
@@ -46,6 +47,7 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
   };
 
   const handlePointerUp = (e: any) => {
+    if (controls) (controls as any).enabled = true;
     if (!isDragging) return;
     setIsDragging(false);
     if (e.target) {

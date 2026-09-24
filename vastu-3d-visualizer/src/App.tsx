@@ -43,7 +43,7 @@ const CameraController = ({ view, panState, onRotationChange }: any) => {
     }
   });
 
-  return <OrbitControls enableDamping target={[0, 2, 0]} maxPolarAngle={Math.PI / 2.03} />;
+  return <OrbitControls makeDefault enableDamping target={[0, 2, 0]} maxPolarAngle={Math.PI / 2.03} />;
 };
 
 function App() {
