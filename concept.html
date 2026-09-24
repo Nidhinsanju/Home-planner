@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ground Floor 40x30 - Accurate Concept 3D</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#17191d;font-family:Arial,sans-serif}
+#ui{position:fixed;z-index:10;left:14px;top:14px;width:310px;background:rgba(24,27,32,.95);border:1px solid #454a52;border-radius:12px;padding:14px;color:#fff}
+h2{margin:0 0 5px;font-size:18px}.sub{font-size:12px;color:#bfc4cb;line-height:1.45;margin-bottom:10px}
+button{border:0;border-radius:7px;padding:9px 11px;margin:3px 3px 3px 0;background:#e9e9e9;color:#111;cursor:pointer;font-weight:600}
+button.dark{background:#373c44;color:#fff}
+#selected{margin-top:9px;background:#2b3038;border-radius:8px;padding:9px;font-size:12px;line-height:1.45}
+#hint{font-size:11px;color:#8f969f;margin-top:8px}
+#legend{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;font-size:11px;color:#cbd0d6}
+.dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+#dpad{position:fixed;right:24px;bottom:24px;width:110px;height:110px;background:rgba(28,31,36,0.85);border:2px solid #3c4148;border-radius:50%;z-index:10;display:flex;justify-content:center;align-items:center;box-shadow:0 10px 30px rgba(0,0,0,0.5)}
+.dpad-btn{position:absolute;background:transparent;border:0;color:#8a9199;font-size:18px;cursor:pointer;width:36px;height:36px;display:flex;justify-content:center;align-items:center;border-radius:50%;transition:all .15s ease;padding:0;margin:0;user-select:none;-webkit-user-select:none}
+.dpad-btn:hover{background:rgba(255,255,255,0.1);color:#fff}
+.dpad-btn:active{background:rgba(255,255,255,0.2);transform:scale(0.9)}
+#pan-up{top:4px} #pan-down{bottom:4px} #pan-left{left:4px} #pan-right{right:4px}
+.dpad-center{width:26px;height:26px;background:#262a30;border-radius:50%;border:1px solid #363a40}
+</style>
+</head>
+<body>
+<div id="ui">
+<h2>Ground Floor · 40 × 30 ft</h2>
+<div class="sub">Rebuilt from the latest plan: correct room positions, parking, staircase, kitchen + rear utility, pooja, and attached Bedroom-2 toilet. This is a spatial concept, not a construction drawing.</div>
+<button id="view3d">3D View</button><button id="top">Top View</button>
+<button id="roof">Roof / Walls</button><button id="labels" class="dark">Labels</button>
+<div id="selected">Click a room to identify it.</div>
+<div id="legend">
+<div><span class="dot" style="background:#d7c4aa"></span>Living / Dining</div>
+<div><span class="dot" style="background:#c9b8a3"></span>Bedrooms</div>
+<div><span class="dot" style="background:#b7c5ca"></span>Kitchen / Utility</div>
+<div><span class="dot" style="background:#d0c2d7"></span>Pooja / Toilets</div>
+</div>
+<div id="hint">Drag = rotate · Wheel = zoom · Right-drag = pan</div>
+</div>
+
+<div id="dpad">
+  <button id="pan-up" class="dpad-btn">▲</button>
+  <button id="pan-left" class="dpad-btn">◀</button>
+  <button id="pan-right" class="dpad-btn">▶</button>
+  <button id="pan-down" class="dpad-btn">▼</button>
+  <div class="dpad-center"></div>
+</div>
+
+<div id="compass" style="position:fixed;top:24px;right:24px;width:70px;height:70px;background:rgba(28,31,36,0.85);border:2px solid #3c4148;border-radius:50%;z-index:10;box-shadow:0 10px 30px rgba(0,0,0,0.5);display:flex;justify-content:center;align-items:center;pointer-events:none;">
+  <svg id="compass-svg" viewBox="0 0 100 100" style="width:100%;height:100%;">
+    <text x="50" y="22" fill="#ef4444" font-size="18" font-weight="bold" font-family="Arial" text-anchor="middle">N</text>
+    <text x="50" y="89" fill="#cbd0d6" font-size="18" font-weight="bold" font-family="Arial" text-anchor="middle">S</text>
+    <text x="87" y="56" fill="#cbd0d6" font-size="18" font-weight="bold" font-family="Arial" text-anchor="middle">E</text>
+    <text x="13" y="56" fill="#cbd0d6" font-size="18" font-weight="bold" font-family="Arial" text-anchor="middle">W</text>
+    <polygon points="50,28 55,50 45,50" fill="#ef4444"/>
+    <polygon points="50,72 55,50 45,50" fill="#cbd0d6"/>
+    <circle cx="50" cy="50" r="3" fill="#17191d"/>
+  </svg>
+</div>
+
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x17191d);
+
+const camera=new THREE.PerspectiveCamera(42,innerWidth/innerHeight,.1,300);
+camera.position.set(46,37,46);
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+controls.target.set(0,2,0);
+controls.maxPolarAngle=Math.PI/2.03;
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x45484e,2.1));
+const sun=new THREE.DirectionalLight(0xffffff,2.0);
+sun.position.set(25,42,25);sun.castShadow=true;scene.add(sun);
+
+const root=new THREE.Group();scene.add(root);
+const floors=new THREE.Group(),walls=new THREE.Group(),furn=new THREE.Group(),labels=new THREE.Group();
+root.add(floors,walls,furn,labels);
+
+const MAT={
+  living:new THREE.MeshStandardMaterial({color:0xd7c4aa,roughness:.9}),
+  bed:new THREE.MeshStandardMaterial({color:0xc9b8a3,roughness:.9}),
+  service:new THREE.MeshStandardMaterial({color:0xb7c5ca,roughness:.85}),
+  wet:new THREE.MeshStandardMaterial({color:0xd0c2d7,roughness:.9}),
+  parking:new THREE.MeshStandardMaterial({color:0x858b91,roughness:.95}),
+  wall:new THREE.MeshStandardMaterial({color:0xe8e4dc,roughness:.92}),
+  wall2:new THREE.MeshStandardMaterial({color:0xb5b0a7,roughness:.9}),
+  glass:new THREE.MeshStandardMaterial({color:0x6f9eb0,transparent:true,opacity:.62}),
+  wood:new THREE.MeshStandardMaterial({color:0x74503a}),
+  sofa:new THREE.MeshStandardMaterial({color:0xb89f87}),
+  road:new THREE.MeshStandardMaterial({color:0x303338})
+};
+
+const clickable=[];
+
+function mesh(group,name,x,y,z,w,h,d,mat,room=null){
+ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
+ m.position.set(x,y,z);m.name=name;m.castShadow=true;m.receiveShadow=true;
+ group.add(m);
+ if(room){m.userData.room=room;clickable.push(m)}
+ return m;
+}
+function floor(room,x,z,w,d,mat){mesh(floors,room,x,.08,z,w,.16,d,mat,room)}
+function wall(x,y,z,w,h,d){mesh(walls,"wall",x,y,z,w,h,d,MAT.wall)}
+function partition(x,z,w,d){wall(x,1.35,z,w,2.7,d)}
+function door(x,z,w,d){mesh(walls,"door",x,0.9,z,w,1.8,d,MAT.wood)}
+function window(x,z,w,d){mesh(walls,"window",x,1.55,z,w,1.35,d,MAT.glass)}
+function label(text,x,z){
+ const c=document.createElement("canvas");c.width=600;c.height=120;
+ const q=c.getContext("2d");q.fillStyle="#17191dcc";q.roundRect(8,8,584,104,18);q.fill();
+ q.fillStyle="#fff";q.textAlign="center";q.textBaseline="middle";
+ const lines = text.split('\n');
+ if(lines.length === 1) {
+   q.font="bold 30px Arial"; q.fillText(lines[0],300,60);
+ } else {
+   q.font="bold 28px Arial"; q.fillText(lines[0],300,45);
+   q.font="normal 22px Arial"; q.fillStyle="#cbd0d6"; q.fillText(lines[1],300,80);
+ }
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));
+ s.position.set(x,3.2,z);s.scale.set(5.5,1.1,1);labels.add(s);
+}
+
+/*
+Coordinate system updated to match the visual topology of the provided plan:
+40 ft frontage = x -20..20
+30 ft depth = z -15..15
+ROAD is at z=-15.
+*/
+
+/* Floors / spaces */
+
+// We will use a state-driven approach for interactive swapping.
+const roomState = [
+  { id:0, name: "PARKING", cx: -13, cz: -13, w: 14, d: 4, mat: MAT.parking, type: "parking" },
+  { id:1, name: "PARKING", cx: -10, cz: -6.5, w: 8, d: 9, mat: MAT.parking, type: "parking" },
+  { id:2, name: "STAIRCASE", cx: -17, cz: -6.5, w: 6, d: 9, mat: MAT.wall2, type: "staircase" },
+  { id:3, name: "LIVING ROOM\n10 × 17 ft", cx: 0, cz: -8.5, w: 12, d: 13, mat: MAT.living, type: "living" },
+  { id:4, name: "DINING", cx: 0, cz: 3.5, w: 12, d: 11, mat: MAT.living, type: "dining" },
+  { id:5, name: "MASTER BEDROOM\n16 × 11 ft", cx: -13, cz: 9.5, w: 14, d: 11, mat: MAT.bed, type: "bed" },
+  { id:6, name: "MASTER TOILET\n8 × 5 ft", cx: -16, cz: 1.0, w: 8, d: 6, mat: MAT.wet, type: "toilet" },
+  { id:7, name: "COMMON TOILET\n5 × 6 ft", cx: -3, cz: 12, w: 6, d: 6, mat: MAT.wet, type: "toilet" },
+  { id:8, name: "POOJA", cx: 3, cz: 12, w: 6, d: 6, mat: MAT.wet, type: "pooja" },
+  { id:9, name: "UTILITY", cx: 13, cz: 12.5, w: 14, d: 5, mat: MAT.service, type: "utility" },
+  { id:10, name: "KITCHEN", cx: 13, cz: 4.5, w: 14, d: 11, mat: MAT.service, type: "kitchen" },
+  { id:11, name: "BEDROOM 2", cx: 10.5, cz: -5, w: 9, d: 8, mat: MAT.bed, type: "bed" },
+  { id:12, name: "BED 2 TOILET", cx: 17.5, cz: -5, w: 5, d: 8, mat: MAT.wet, type: "toilet" },
+  { id:13, name: "ELDER BEDROOM\n10 × 8 ft", cx: 10.5, cz: -12, w: 9, d: 6, mat: MAT.bed, type: "bed" },
+  { id:14, name: "ELDER TOILET\n8 × 5 ft", cx: 17.5, cz: -12, w: 5, d: 6, mat: MAT.wet, type: "toilet" }
+];
+
+/* Outer walls */
+wall(0, 1.35, -14.625, 40, 2.7, 0.75);
+wall(0, 1.35, 14.625, 40, 2.7, 0.75);
+wall(-19.625, 1.35, 0, 0.75, 2.7, 30);
+wall(19.625, 1.35, 0, 0.75, 2.7, 30);
+
+/* Main partitions */
+partition(-6, 0, 0.5, 30);
+partition(6, 0, 0.5, 30); 
+partition(-13, 4, 14, 0.5);
+partition(-13, -2, 14, 0.5);
+partition(-17, -11, 6, 0.5);
+partition(-14, -6.5, 0.5, 9);
+partition(0, 9, 12, 0.5);
+partition(0, 12, 0.5, 6);
+partition(13, 10, 14, 0.5);
+partition(13, -1, 14, 0.5);
+partition(13, -9, 14, 0.5);
+partition(15, -5, 0.5, 8);
+partition(15, -12, 0.5, 6);
+
+/* Doors */
+door(0, -14.625, 2.0, 0.75);
+door(-6, 7, 0.5, 1.2);
+door(-16, 4, 1.0, 0.5);
+door(-3, 9, 1.0, 0.5);
+door(3, 9, 1.0, 0.5);
+door(13, 10, 1.0, 0.5);
+door(6, 4, 0.5, 1.2);
+door(6, -5, 0.5, 1.0);
+door(15, -3, 0.5, 0.9);
+door(6, -12, 0.5, 1.0);
+door(15, -11, 0.5, 0.9);
+
+/* Windows */
+window(-13, 14.625, 4.0, 0.75);
+window(-19.625, 9.5, 0.75, 4.0);
+window(-19.625, 1.0, 0.75, 2.0);
+window(-19.625, -6.5, 0.75, 3.0);
+window(-3, 14.625, 2.0, 0.75);
+window(3, 14.625, 2.0, 0.75);
+window(13, 14.625, 4.0, 0.75);
+window(19.625, 4.5, 0.75, 4.0);
+window(10.5, -9, 4.0, 0.75);
+window(19.625, -5.0, 0.75, 2.0);
+window(10.5, -14.625, 4.0, 0.75);
+window(19.625, -12.0, 0.75, 2.0);
+
+/* Road */
+mesh(root,"30 FT ROAD",0,-0.2,-22,80,0.15,14,MAT.road);
+for(let x=-36;x<=36;x+=8)mesh(root,"road marking",x,-0.08,-22,4,0.03,0.14,new THREE.MeshBasicMaterial({color:0xf1df76}));
+
+function F(name,x,y,z,w,h,d,mat,room){mesh(furn,name,x,y,z,w,h,d,mat,room)}
+
+function createVastuLabel(text, x, z) {
+  const c=document.createElement("canvas");c.width=600;c.height=120;
+  const q=c.getContext("2d");
+  q.fillStyle="rgba(220, 30, 30, 0.95)"; q.roundRect(8,8,584,104,18); q.fill();
+  q.fillStyle="#fff";q.textAlign="center";q.textBaseline="middle";
+  q.font="bold 24px Arial"; q.fillText(text,300,60);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));
+  s.position.set(x,7.2,z);s.scale.set(6.0,1.2,1);labels.add(s);
+}
+
+function checkVastu(r) {
+  let isSW = (r.cx < 0 && r.cz < 0);
+  let isSE = (r.cx > 0 && r.cz < 0);
+  let isNE = (r.cx > 0 && r.cz > 0);
+  let isNW = (r.cx < 0 && r.cz > 0);
+  
+  if(r.name.includes("MASTER BEDROOM") && !isSW) return "Vastu: Move to South-West";
+  if(r.name.includes("KITCHEN") && !isSE) return "Vastu: Move to South-East";
+  if(r.name.includes("POOJA") && !isNE) return "Vastu: Move to North-East";
+  if(r.name.includes("TOILET") && (isNE || isSW)) return "Vastu: Avoid NE or SW";
+  if(r.name.includes("BEDROOM") && !r.name.includes("MASTER") && isSE) return "Vastu: Avoid Bedroom in SE";
+  return null;
+}
+
+let selectedId = null;
+
+function renderState() {
+  while(floors.children.length > 0){ floors.remove(floors.children[0]); }
+  while(furn.children.length > 0){ furn.remove(furn.children[0]); }
+  while(labels.children.length > 0){ labels.remove(labels.children[0]); }
+  clickable.length = 0;
+
+  roomState.forEach(r => {
+    // Floor
+    const m = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.16, r.d), r.mat);
+    m.position.set(r.cx, 0.08, r.cz);
+    m.name = r.name;
+    m.userData = { id: r.id, room: r.name };
+    m.castShadow = true; m.receiveShadow = true;
+    floors.add(m);
+    clickable.push(m);
+
+    // Outline / Vastu
+    let vError = checkVastu(r);
+    if(vError) {
+      const edges = new THREE.EdgesGeometry( m.geometry );
+      const line = new THREE.LineSegments( edges, new THREE.LineBasicMaterial( { color: 0xff0000, linewidth: 3 } ) );
+      m.add(line);
+      createVastuLabel(vError, r.cx, r.cz);
+    }
+    
+    if(selectedId === r.id) {
+      const selEdges = new THREE.EdgesGeometry( m.geometry );
+      const selLine = new THREE.LineSegments( selEdges, new THREE.LineBasicMaterial( { color: 0xffff00, linewidth: 3 } ) );
+      m.add(selLine);
+    }
+
+    // Label
+    label(r.name, r.cx, r.cz);
+
+    // Furniture
+    if(r.type === "bed") {
+      F("bed",r.cx,0.48,r.cz,5.1,0.25,6.0,MAT.sofa,r.name);
+      F("headboard",r.cx,1.0,r.cz-2.85,5.1,0.95,0.18,MAT.wood,r.name);
+    } else if(r.type === "living") {
+      F("sofa",r.cx-3,0.62,r.cz,1.1,1.0,6.0,MAT.sofa,r.name);
+      F("coffee table",r.cx,0.45,r.cz,2.5,0.35,1.5,MAT.wood,r.name);
+    } else if(r.type === "dining") {
+      F("dining table",r.cx,0.7,r.cz,5.4,0.18,2.9,MAT.wood,r.name);
+    } else if(r.type === "kitchen") {
+      F("counter",r.cx,1.0,r.cz, r.w-2, 1.8, 1.5, MAT.wall2,r.name);
+    } else if(r.type === "toilet") {
+      F("toilet",r.cx-1,0.45,r.cz,1.25,0.85,2.0,new THREE.MeshStandardMaterial({color:0xf4f3ee}),r.name);
+    } else if(r.type === "parking") {
+      F("car",r.cx,0.75,r.cz,4.5,1.5,9.0,new THREE.MeshStandardMaterial({color:0x586d82}),r.name);
+    } else if(r.type === "staircase") {
+      for(let i=0;i<10;i++){
+        mesh(furn,"stair step",r.cx,0.22+i*0.18,r.cz-3+i*0.6,r.w-1,0.32,0.6,MAT.wall2);
+      }
+    }
+  });
+
+  // Directions
+  label("SOUTH (ROAD)", 0, -25);
+  label("NORTH", 0, 19);
+  label("EAST", 26, -3);
+  label("WEST", -26, -3);
+}
+
+renderState();
+
+/* Interaction */
+const ray=new THREE.Raycaster(),pointer=new THREE.Vector2();
+const selected=document.getElementById("selected");
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let draggedId = null;
+let dragOffset = new THREE.Vector3();
+let dragMesh = null;
+
+renderer.domElement.addEventListener("pointerdown",e=>{
+ if(e.button !== 0) return;
+ const r=renderer.domElement.getBoundingClientRect();
+ pointer.x=((e.clientX-r.left)/r.width)*2-1;
+ pointer.y=-((e.clientY-r.top)/r.height)*2+1;
+ ray.setFromCamera(pointer,camera);
+ const hits=ray.intersectObjects(clickable,false);
+ if(hits.length){
+   draggedId = hits[0].object.userData.id;
+   dragMesh = hits[0].object;
+   controls.enabled = false;
+   
+   let intersection = new THREE.Vector3();
+   ray.ray.intersectPlane(dragPlane, intersection);
+   dragOffset.copy(dragMesh.position).sub(intersection);
+   
+   dragMesh.position.y = 2.0; 
+   if(dragMesh.material) {
+     dragMesh.material.transparent = true;
+     dragMesh.material.opacity = 0.6;
+   }
+   selected.innerHTML="<b>"+dragMesh.userData.room.split('\n')[0]+"</b> picked up. Drag and drop onto another room to swap.";
+ }
+});
+
+renderer.domElement.addEventListener("pointermove",e=>{
+ if(draggedId !== null && dragMesh !== null) {
+   const r=renderer.domElement.getBoundingClientRect();
+   pointer.x=((e.clientX-r.left)/r.width)*2-1;
+   pointer.y=-((e.clientY-r.top)/r.height)*2+1;
+   ray.setFromCamera(pointer,camera);
+   
+   let intersection = new THREE.Vector3();
+   if(ray.ray.intersectPlane(dragPlane, intersection)) {
+     dragMesh.position.copy(intersection.add(dragOffset));
+     dragMesh.position.y = 2.0;
+   }
+ }
+});
+
+document.addEventListener("pointerup",e=>{
+ if(draggedId !== null) {
+   controls.enabled = true;
+   
+   let droppedX = dragMesh.position.x;
+   let droppedZ = dragMesh.position.z;
+   let a = roomState.find(room=>room.id===draggedId);
+   let distToSelf = Math.hypot(droppedX - a.cx, droppedZ - a.cz);
+   
+   let closestId = null;
+   let minD = Infinity;
+   roomState.forEach(room => {
+      if(room.id !== draggedId) {
+         let dist = Math.hypot(droppedX - room.cx, droppedZ - room.cz);
+         if(dist < minD) {
+            minD = dist;
+            closestId = room.id;
+         }
+      }
+   });
+   
+   if(closestId !== null && minD < distToSelf && minD < 12) {
+       let b = roomState.find(room=>room.id===closestId);
+       let tmpName = a.name; a.name = b.name; b.name = tmpName;
+       let tmpMat = a.mat; a.mat = b.mat; b.mat = tmpMat;
+       let tmpType = a.type; a.type = b.type; b.type = tmpType;
+       selected.innerHTML="Rooms interchanged! Red borders show Vastu violations.";
+   } else {
+       selected.innerHTML="Room returned to original place.";
+   }
+   
+   draggedId = null;
+   dragMesh = null;
+   renderState(); 
+ }
+});
+
+let roofOn=true,labelsOn=true;
+document.getElementById("view3d").onclick=()=>{camera.position.set(46,37,46);controls.target.set(0,2,0);controls.update()};
+document.getElementById("top").onclick=()=>{camera.position.set(0,67,.01);controls.target.set(0,0,0);controls.update()};
+document.getElementById("roof").onclick=()=>{
+ roofOn=!roofOn;
+ walls.visible=roofOn;
+};
+document.getElementById("labels").onclick=()=>{
+ labelsOn=!labelsOn;labels.visible=labelsOn;
+};
+
+const panState = { up: false, down: false, left: false, right: false };
+function setupPan(id, dir) {
+  const btn = document.getElementById(id);
+  btn.onpointerdown = (e) => { e.preventDefault(); panState[dir] = true; };
+  btn.onpointerup = btn.onpointerleave = () => { panState[dir] = false; };
+}
+setupPan("pan-up", "up"); setupPan("pan-down", "down");
+setupPan("pan-left", "left"); setupPan("pan-right", "right");
+
+function applyPan() {
+  let mx = 0, mz = 0;
+  if(panState.up) mz -= 1; if(panState.down) mz += 1;
+  if(panState.left) mx -= 1; if(panState.right) mx += 1;
+  if(mx !== 0 || mz !== 0) {
+    const angle = controls.getAzimuthalAngle();
+    const v = new THREE.Vector3(mx, 0, mz).applyAxisAngle(new THREE.Vector3(0,1,0), angle);
+    const speed = 0.5;
+    camera.position.addScaledVector(v, speed);
+    controls.target.addScaledVector(v, speed);
+  }
+}
+
+addEventListener("resize",()=>{
+ camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);
+});
+(function animate(){
+ requestAnimationFrame(animate);
+ applyPan();
+ controls.update();
+ if(document.getElementById("compass-svg")) document.getElementById("compass-svg").style.transform = `rotate(${controls.getAzimuthalAngle() + Math.PI}rad)`;
+ renderer.render(scene,camera);
+})();
+</script>
+</body>
+</html>
