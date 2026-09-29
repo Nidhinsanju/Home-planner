@@ -15,20 +15,20 @@ export const MAT = {
 };
 
 export const initialRoomState = [
-  { id: 1, name: "PARKING", cx: -10, cz: -6.5, w: 8, d: 9, mat: MAT.parking, type: "parking" },
-  { id: 2, name: "STAIRCASE", cx: -17, cz: -6.5, w: 6, d: 9, mat: MAT.wall2, type: "staircase" },
-  { id: 3, name: "LIVING ROOM\n10 × 17 ft", cx: 0, cz: -8.5, w: 12, d: 13, mat: MAT.living, type: "living" },
-  { id: 4, name: "DINING", cx: 0, cz: 3.5, w: 12, d: 11, mat: MAT.living, type: "dining" },
-  { id: 5, name: "MASTER BEDROOM\n16 × 11 ft", cx: -13, cz: 9.5, w: 14, d: 11, mat: MAT.bed, type: "bed" },
-  { id: 6, name: "MASTER TOILET\n8 × 5 ft", cx: -16, cz: 1.0, w: 8, d: 6, mat: MAT.wet, type: "toilet" },
-  { id: 7, name: "COMMON TOILET\n5 × 6 ft", cx: -3, cz: 12, w: 6, d: 6, mat: MAT.wet, type: "toilet" },
-  { id: 8, name: "POOJA", cx: 3, cz: 12, w: 6, d: 6, mat: MAT.wet, type: "pooja" },
-  { id: 9, name: "UTILITY", cx: 13, cz: 12.5, w: 14, d: 5, mat: MAT.service, type: "utility" },
-  { id: 10, name: "KITCHEN", cx: 13, cz: 4.5, w: 14, d: 11, mat: MAT.service, type: "kitchen" },
-  { id: 11, name: "BEDROOM 2", cx: 10.5, cz: -5, w: 9, d: 8, mat: MAT.bed, type: "bed" },
-  { id: 12, name: "BED 2 TOILET", cx: 17.5, cz: -5, w: 5, d: 8, mat: MAT.wet, type: "toilet" },
-  { id: 13, name: "ELDER BEDROOM\n10 × 8 ft", cx: 10.5, cz: -12, w: 9, d: 6, mat: MAT.bed, type: "bed" },
-  { id: 14, name: "ELDER TOILET\n8 × 5 ft", cx: 17.5, cz: -12, w: 5, d: 6, mat: MAT.wet, type: "toilet" },
+  { id: 1, name: "PARKING\n8 × 9 ft", cx: -10, cz: -4.5, w: 8, d: 9, mat: MAT.parking, type: "parking" },
+  { id: 2, name: "STAIRCASE\n6 × 9 ft", cx: -17, cz: -9.5, w: 6, d: 9, mat: MAT.wall2, type: "staircase" },
+  { id: 3, name: "LIVING ROOM\n10 × 17 ft", cx: -1, cz: -8.5, w: 10, d: 17, mat: MAT.living, type: "living" },
+  { id: 4, name: "DINING\n12 × 11 ft", cx: 0, cz: 5.5, w: 12, d: 11, mat: MAT.living, type: "dining" },
+  { id: 5, name: "MASTER BEDROOM\n16 × 11 ft", cx: -14, cz: 5.5, w: 16, d: 11, mat: MAT.bed, type: "bed" },
+  { id: 6, name: "MASTER TOILET\n8 × 5 ft", cx: -18, cz: -2.5, w: 8, d: 5, mat: MAT.wet, type: "toilet" },
+  { id: 7, name: "COMMON TOILET\n5 × 6 ft", cx: -2.5, cz: 14, w: 5, d: 6, mat: MAT.wet, type: "toilet" },
+  { id: 8, name: "POOJA\n6 × 6 ft", cx: 3, cz: 14, w: 6, d: 6, mat: MAT.wet, type: "pooja" },
+  { id: 9, name: "UTILITY\n14 × 5 ft", cx: 13, cz: 13.5, w: 14, d: 5, mat: MAT.service, type: "utility" },
+  { id: 10, name: "KITCHEN\n14 × 11 ft", cx: 13, cz: 5.5, w: 14, d: 11, mat: MAT.service, type: "kitchen" },
+  { id: 11, name: "BEDROOM 2\n9 × 8 ft", cx: 10.5, cz: -4, w: 9, d: 8, mat: MAT.bed, type: "bed" },
+  { id: 12, name: "BED 2 TOILET\n5 × 8 ft", cx: 17.5, cz: -4, w: 5, d: 8, mat: MAT.wet, type: "toilet" },
+  { id: 13, name: "ELDER BEDROOM\n10 × 8 ft", cx: 9, cz: -12, w: 10, d: 8, mat: MAT.bed, type: "bed" },
+  { id: 14, name: "ELDER TOILET\n8 × 5 ft", cx: 18, cz: -10.5, w: 8, d: 5, mat: MAT.wet, type: "toilet" },
 ];
 
 

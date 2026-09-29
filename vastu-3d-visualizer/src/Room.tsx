@@ -6,8 +6,8 @@ import { MAT } from './constants';
 
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) => {
-  const meshRef = useRef<THREE.Mesh>(null);
+export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms, unit = 'ft', onDeleteRoom, eraserMode, onRemoveBlock }: any) => {
+  const groupRef = useRef<THREE.Group>(null);
   const { camera, raycaster, pointer, controls } = useThree();
   const [isDragging, setIsDragging] = useState(false);
   const dragOffset = useRef(new THREE.Vector3());
@@ -16,28 +16,33 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
   // R3F doesn't have a direct equivalent for global pointer events capturing while dragging outside mesh,
   // so we bind to window via useFrame if dragging.
   useFrame(() => {
-    if (isDragging && meshRef.current) {
+    if (isDragging && groupRef.current) {
       raycaster.setFromCamera(pointer, camera);
       const intersection = new THREE.Vector3();
       if (raycaster.ray.intersectPlane(dragPlane, intersection)) {
-        meshRef.current.position.copy(intersection.add(dragOffset.current));
-        meshRef.current.position.y = 2.0; // Lift up while dragging
+        groupRef.current.position.copy(intersection.add(dragOffset.current));
+        groupRef.current.position.y = 2.0; // Lift up while dragging
       }
-    } else if (meshRef.current) {
-      meshRef.current.position.set(room.cx, 0.08, room.cz);
+    } else if (groupRef.current) {
+      groupRef.current.position.set(room.cx, 0.08, room.cz);
     }
   });
 
-  const handlePointerDown = (e: any) => {
+  const handlePointerDown = (e: any, key: string) => {
     e.stopPropagation();
+    if (eraserMode) {
+      if (onRemoveBlock) onRemoveBlock(room.id, key);
+      return;
+    }
+    
     if (controls) (controls as any).enabled = false;
     onSelect(room.id, `<b>${room.name.split('\n')[0]}</b> picked up. Drag and drop onto another room to swap.`);
     setIsDragging(true);
 
     const intersection = new THREE.Vector3();
     raycaster.ray.intersectPlane(dragPlane, intersection);
-    if(meshRef.current) {
-      dragOffset.current.copy(meshRef.current.position).sub(intersection);
+    if(groupRef.current) {
+      dragOffset.current.copy(groupRef.current.position).sub(intersection);
     }
 
     if (e.target) {
@@ -53,10 +58,16 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
       e.target.releasePointerCapture(e.pointerId);
     }
 
+    // Check if dropped into recycle bin (bottom left)
+    if (e.clientX < 140 && e.clientY > window.innerHeight - 140) {
+      if (onDeleteRoom) onDeleteRoom(room);
+      return;
+    }
+
     // Evaluate drop position
-    if (!meshRef.current) return;
-    const droppedX = meshRef.current.position.x;
-    const droppedZ = meshRef.current.position.z;
+    if (!groupRef.current) return;
+    const droppedX = groupRef.current.position.x;
+    const droppedZ = groupRef.current.position.z;
 
     const distToSelf = Math.hypot(droppedX - room.cx, droppedZ - room.cz);
     let closestId: number | null = null;
@@ -97,22 +108,38 @@ export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) =
 
   return (
     <group>
-      <mesh
-        ref={meshRef}
-        position={[room.cx, 0.08, room.cz]}
-        material={room.mat}
-        castShadow
-        receiveShadow
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-      >
-        <boxGeometry args={[room.w, 0.16, room.d]} />
-        <meshStandardMaterial color={room.mat.color} roughness={room.mat.roughness} transparent={isDragging} opacity={isDragging ? 0.6 : 1.0} />
-        {isSelected && <Outlines thickness={0.15} color="yellow" />}
-      </mesh>
+      <group ref={groupRef} position={[room.cx, 0.08, room.cz]}>
+        {Array.from({ length: room.w }).map((_, i) =>
+          Array.from({ length: room.d }).map((_, j) => {
+            const rx = i - room.w / 2 + 0.5;
+            const rz = j - room.d / 2 + 0.5;
+            const key = `${rx},${rz}`;
+            if (room.removedBlocks?.includes(key)) return null;
+
+            return (
+              <mesh
+                key={key}
+                position={[rx, 0, rz]}
+                castShadow
+                receiveShadow
+                onPointerDown={(e) => handlePointerDown(e, key)}
+                onPointerUp={handlePointerUp}
+              >
+                <boxGeometry args={[1, 0.16, 1]} />
+                <meshStandardMaterial color={room.mat.color} roughness={room.mat.roughness} transparent={isDragging} opacity={isDragging ? 0.6 : 1.0} />
+                {isSelected && <Outlines thickness={0.15} color="yellow" />}
+              </mesh>
+            );
+          })
+        )}
+      </group>
 
       {/* Label */}
-      <SpriteLabel text={room.name} x={room.cx} z={room.cz} />
+      <SpriteLabel 
+        text={`${room.name.split('\n')[0]}\n${unit === 'ft' ? `${room.w} × ${room.d} ft` : `${(room.w / 3.28084).toFixed(2)} × ${(room.d / 3.28084).toFixed(2)} mt`}`} 
+        x={room.cx} 
+        z={room.cz} 
+      />
 
 
       {/* Furniture */}

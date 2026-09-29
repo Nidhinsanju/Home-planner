@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { initialRoomState } from './constants';
 
 type AppState = {
@@ -12,9 +12,21 @@ type AppState = {
   canUndo: boolean;
   onRedo: () => void;
   canRedo: boolean;
+  plotW: number | '';
+  setPlotW: (val: number | '') => void;
+  plotD: number | '';
+  setPlotD: (val: number | '') => void;
+  unit: 'ft' | 'mt';
+  bin?: any[];
+  onEmptyBin?: () => void;
+  onRestore?: (room: any) => void;
+  eraserMode?: boolean;
+  setEraserMode?: (val: boolean) => void;
 };
 
-export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsOn, selectedText, setView, onUndo, canUndo, onRedo, canRedo }) => {
+export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsOn, selectedText, setView, onUndo, canUndo, onRedo, canRedo, plotW, setPlotW, plotD, setPlotD, unit, bin = [], onEmptyBin, onRestore, eraserMode, setEraserMode }) => {
+  const [showBin, setShowBin] = useState(false);
+
   return (
     <>
       <div className="top-center-panel">
@@ -22,7 +34,11 @@ export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsO
         <button className="ui-btn" onClick={onRedo} disabled={!canRedo} style={{ opacity: canRedo ? 1 : 0.5, margin: 0 }}>Redo ↷</button>
       </div>
       <div className="ui-panel">
-      <h2>Ground Floor · 40 × 30 ft</h2>
+      <h2>
+        Ground Floor · 
+        <input className="plot-input" type="number" value={plotW} onChange={(e) => setPlotW(e.target.value ? parseFloat(e.target.value) : '')} /> × 
+        <input className="plot-input" type="number" value={plotD} onChange={(e) => setPlotD(e.target.value ? parseFloat(e.target.value) : '')} /> {unit}
+      </h2>
       <div className="sub">
         Rebuilt in React + R3F: Interactive spatial concept with dynamic room swapping.
       </div>
@@ -35,6 +51,9 @@ export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsO
       <button className="ui-btn dark" onClick={() => setLabelsOn(!labelsOn)}>
         {labelsOn ? "Hide Labels" : "Show Labels"}
       </button>
+      <button className="ui-btn" style={{ background: eraserMode ? '#ef4444' : '#e9e9e9', color: eraserMode ? '#fff' : '#111' }} onClick={() => setEraserMode && setEraserMode(!eraserMode)}>
+        {eraserMode ? "⛏️ Eraser Mode ON" : "⛏️ Eraser Mode OFF"}
+      </button>
 
       <div className="selected-info" dangerouslySetInnerHTML={{ __html: selectedText }} />
 
@@ -46,22 +65,59 @@ export const UI: React.FC<AppState> = ({ roofOn, setRoofOn, labelsOn, setLabelsO
       </div>
       <div className="hint">Drag = rotate · Wheel = zoom · Right-drag = pan</div>
     </div>
+    
+    <div className="bin-wrapper">
+      <div className="bin-icon" onClick={() => setShowBin(!showBin)} title="Recycle Bin (Drag rooms here)">
+        🗑️
+        {bin.length > 0 && <span className="bin-badge">{bin.length}</span>}
+      </div>
+
+      {showBin && (
+        <div className="bin-popup">
+          <h3>Recycle Bin</h3>
+          {bin.length === 0 ? (
+            <p>Bin is empty. Drag a room here to delete it.</p>
+          ) : (
+            <>
+              <ul>
+                {bin.map((r: any) => (
+                  <li key={r.id}>
+                    {r.name.split('\n')[0]} 
+                    <button className="restore-btn" onClick={() => onRestore && onRestore(r)}>Restore</button>
+                  </li>
+                ))}
+              </ul>
+              <button className="ui-btn dark" onClick={() => { onEmptyBin && onEmptyBin(); setShowBin(false); }} style={{ width: '100%', marginTop: '10px' }}>Empty Bin</button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
     </>
   );
 };
 
-export const Compass: React.FC<{ rotation: number }> = ({ rotation }) => {
+export const Compass: React.FC<{ rotation: number, unit?: 'ft' | 'mt', setUnit?: (u: 'ft' | 'mt') => void }> = ({ rotation, unit = 'ft', setUnit }) => {
   return (
-    <div className="compass">
-      <svg viewBox="0 0 100 100" style={{ width: '100%', height: '100%', transform: `rotate(${rotation}rad)` }}>
-        <text x="50" y="22" fill="#ef4444" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">N</text>
-        <text x="50" y="89" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">S</text>
-        <text x="87" y="56" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">E</text>
-        <text x="13" y="56" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">W</text>
-        <polygon points="50,28 55,50 45,50" fill="#ef4444" />
-        <polygon points="50,72 55,50 45,50" fill="#cbd0d6" />
-        <circle cx="50" cy="50" r="3" fill="#17191d" />
-      </svg>
-    </div>
+    <>
+      <div className="compass">
+        <svg viewBox="0 0 100 100" style={{ width: '100%', height: '100%', transform: `rotate(${rotation}rad)` }}>
+          <text x="50" y="22" fill="#ef4444" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">N</text>
+          <text x="50" y="89" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">S</text>
+          <text x="87" y="56" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">E</text>
+          <text x="13" y="56" fill="#cbd0d6" fontSize="18" fontWeight="bold" fontFamily="Arial" textAnchor="middle">W</text>
+          <polygon points="50,28 55,50 45,50" fill="#ef4444" />
+          <polygon points="50,72 55,50 45,50" fill="#cbd0d6" />
+          <circle cx="50" cy="50" r="3" fill="#17191d" />
+        </svg>
+      </div>
+      <button 
+        className="measurement-label" 
+        title="Toggle Unit of Measurement"
+        onClick={() => setUnit && setUnit(unit === 'ft' ? 'mt' : 'ft')}
+      >
+        {unit}
+      </button>
+    </>
   );
 };
