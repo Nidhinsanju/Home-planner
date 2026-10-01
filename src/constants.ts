@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { BuildingModel } from './types';
 
 export const MAT = {
   living: new THREE.MeshStandardMaterial({ color: 0xd7c4aa, roughness: 0.9 }),
@@ -31,4 +32,54 @@ export const initialRoomState = [
   { id: 14, name: "ELDER TOILET\n8 × 5 ft", cx: 18, cz: -10.5, w: 8, d: 5, mat: MAT.wet, type: "toilet" },
 ];
 
+export const LEGO_TYPES = [
+  { id: 'floor', name: 'Floor Block', args: [1, 0.16, 1], mat: 'living', y: 0.08 },
+  { id: 'wall', name: 'Wall Block', args: [1, 2.7, 1], mat: 'wall2', y: 1.35 },
+  { id: 'table', name: 'Table Block', args: [1, 1.0, 1], mat: 'wood', y: 0.5 },
+  { id: 'glass', name: 'Glass Block', args: [1, 2.7, 1], mat: 'glass', y: 1.35 },
+];
 
+export const exampleBuildingModel: BuildingModel = {
+  project: {
+    id: "proj-1",
+    name: "My Home",
+    unit: "ft"
+  },
+  plot: {
+    width: 40,
+    depth: 30
+  },
+  rooms: initialRoomState.map((r, i) => ({
+    id: `room-${i}`,
+    type: r.type,
+    name: r.name.split('\n')[0],
+    x: r.cx,
+    y: r.cz, // We map cz to y for the 2D model
+    width: r.w,
+    depth: r.d,
+    rotation: 0
+  })),
+  walls: [],
+  doors: [],
+  windows: [],
+  stairs: [],
+  furniture: []
+};
+
+export const emptyBuildingModel: BuildingModel = {
+  project: {
+    id: "proj-empty",
+    name: "New Project",
+    unit: "ft"
+  },
+  plot: {
+    width: 40,
+    depth: 30
+  },
+  rooms: [],
+  walls: [],
+  doors: [],
+  windows: [],
+  stairs: [],
+  furniture: []
+};

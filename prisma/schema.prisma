@@ -1,0 +1,35 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  unit      String   @default("ft")
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  buildings Building[]
+}
+
+model Building {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  unit      String   @default("ft")
+  plot      Json
+  rooms     Json     @default("[]")
+  walls     Json     @default("[]")
+  doors     Json     @default("[]")
+  windows   Json     @default("[]")
+  stairs    Json     @default("[]")
+  furniture Json     @default("[]")
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
