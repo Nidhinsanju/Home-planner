@@ -1,147 +1,54 @@
-import React, { useState, useRef } from 'react';
-import { useThree, useFrame } from '@react-three/fiber';
-import { Text, Outlines } from '@react-three/drei';
+import React, { useRef } from 'react';
+import { Outlines } from '@react-three/drei';
 import * as THREE from 'three';
-import { MAT, checkVastu } from './constants';
+import { MAT } from './constants';
 
-const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-
-export const RoomMesh = ({ room, isSelected, onSelect, rooms, setRooms }: any) => {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const { camera, raycaster, pointer, controls } = useThree();
-  const [isDragging, setIsDragging] = useState(false);
-  const dragOffset = useRef(new THREE.Vector3());
-
-  const vError = checkVastu(room);
-
-  // R3F doesn't have a direct equivalent for global pointer events capturing while dragging outside mesh,
-  // so we bind to window via useFrame if dragging.
-  useFrame(() => {
-    if (isDragging && meshRef.current) {
-      raycaster.setFromCamera(pointer, camera);
-      const intersection = new THREE.Vector3();
-      if (raycaster.ray.intersectPlane(dragPlane, intersection)) {
-        meshRef.current.position.copy(intersection.add(dragOffset.current));
-        meshRef.current.position.y = 2.0; // Lift up while dragging
-      }
-    } else if (meshRef.current) {
-      meshRef.current.position.set(room.cx, 0.08, room.cz);
-    }
-  });
+export const RoomMesh = ({ room, isSelected, onSelect, unit = 'ft', eraserMode, onDeleteRoom }: any) => {
+  const groupRef = useRef<THREE.Group>(null);
 
   const handlePointerDown = (e: any) => {
     e.stopPropagation();
-    if (controls) (controls as any).enabled = false;
-    onSelect(room.id, `<b>${room.name.split('\n')[0]}</b> picked up. Drag and drop onto another room to swap.`);
-    setIsDragging(true);
-
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(dragPlane, intersection);
-    if(meshRef.current) {
-      dragOffset.current.copy(meshRef.current.position).sub(intersection);
-    }
-
-    if (e.target) {
-      e.target.setPointerCapture(e.pointerId);
-    }
-  };
-
-  const handlePointerUp = (e: any) => {
-    if (controls) (controls as any).enabled = true;
-    if (!isDragging) return;
-    setIsDragging(false);
-    if (e.target) {
-      e.target.releasePointerCapture(e.pointerId);
-    }
-
-    // Evaluate drop position
-    if (!meshRef.current) return;
-    const droppedX = meshRef.current.position.x;
-    const droppedZ = meshRef.current.position.z;
-
-    const distToSelf = Math.hypot(droppedX - room.cx, droppedZ - room.cz);
-    let closestId: number | null = null;
-    let minD = Infinity;
-
-    rooms.forEach((r: any) => {
-      if (r.id !== room.id) {
-        const dist = Math.hypot(droppedX - r.cx, droppedZ - r.cz);
-        if (dist < minD) {
-          minD = dist;
-          closestId = r.id;
-        }
-      }
-    });
-
-    if (closestId !== null && minD < distToSelf && minD < 12) {
-      const newRooms = [...rooms];
-      const aIndex = newRooms.findIndex(r => r.id === room.id);
-      const bIndex = newRooms.findIndex(r => r.id === closestId);
-      
-      const a = { ...newRooms[aIndex] };
-      const b = { ...newRooms[bIndex] };
-
-      // Swap properties
-      const tmpName = a.name; a.name = b.name; b.name = tmpName;
-      const tmpMat = a.mat; a.mat = b.mat; b.mat = tmpMat;
-      const tmpType = a.type; a.type = b.type; b.type = tmpType;
-
-      newRooms[aIndex] = a;
-      newRooms[bIndex] = b;
-
-      setRooms(newRooms);
-      onSelect(null, "Rooms interchanged! Red borders show Vastu violations.");
+    if (eraserMode) {
+      if (onDeleteRoom) onDeleteRoom(room);
     } else {
-      onSelect(null, "Room returned to original place.");
+      if (onSelect) onSelect(room, `${room.name.split('\n')[0]}\n${room.w}x${room.d} ft`);
     }
   };
 
   return (
     <group>
-      <mesh
-        ref={meshRef}
-        position={[room.cx, 0.08, room.cz]}
-        material={room.mat}
-        castShadow
-        receiveShadow
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-      >
-        <boxGeometry args={[room.w, 0.16, room.d]} />
-        <meshStandardMaterial color={room.mat.color} roughness={room.mat.roughness} transparent={isDragging} opacity={isDragging ? 0.6 : 1.0} />
-        {vError && <Outlines thickness={0.15} color="red" />}
-        {isSelected && !vError && <Outlines thickness={0.15} color="yellow" />}
-      </mesh>
+      <group ref={groupRef} position={[room.cx, 0.08, room.cz]}>
+        {Array.from({ length: room.w }).map((_, i) =>
+          Array.from({ length: room.d }).map((_, j) => {
+            const rx = i - room.w / 2 + 0.5;
+            const rz = j - room.d / 2 + 0.5;
+            const key = `${rx},${rz}`;
+            if (room.removedBlocks?.includes(key)) return null;
 
-      {/* Label */}
-      <group position={[room.cx, 3.2, room.cz]}>
-         <Text
-            color="#fff"
-            fontSize={1.2}
-            maxWidth={room.w}
-            lineHeight={1.2}
-            textAlign="center"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.1}
-            outlineColor="#000"
-         >
-            {room.name}
-         </Text>
+            return (
+              <mesh
+                key={key}
+                position={[rx, 0, rz]}
+                castShadow
+                receiveShadow
+                onPointerDown={handlePointerDown}
+              >
+                <boxGeometry args={[1, 0.16, 1]} />
+                <meshStandardMaterial color={room.mat.color} roughness={room.mat.roughness} />
+                {isSelected && <Outlines thickness={0.15} color="yellow" />}
+              </mesh>
+            );
+          })
+        )}
       </group>
 
-      {/* Vastu Error Label */}
-      {vError && (
-         <group position={[room.cx, 7.2, room.cz]}>
-            <mesh>
-               <planeGeometry args={[12, 2.5]} />
-               <meshBasicMaterial color="#dc1e1e" transparent opacity={0.9} />
-            </mesh>
-            <Text position={[0, 0, 0.01]} color="#fff" fontSize={0.9} fontWeight="bold">
-               {vError}
-            </Text>
-         </group>
-      )}
+      {/* Label */}
+      <SpriteLabel 
+        text={`${room.name.split('\n')[0]}\n${unit === 'ft' ? `${room.w} × ${room.d} ft` : `${(room.w / 3.28084).toFixed(2)} × ${(room.d / 3.28084).toFixed(2)} mt`}`} 
+        x={room.cx} 
+        z={room.cz} 
+      />
+
 
       {/* Furniture */}
       <Furniture room={room} />
@@ -190,4 +97,47 @@ const Furniture = ({ room }: { room: any }) => {
   }
 
   return null;
+};
+
+const SpriteLabel = ({ text, x, z }: { text: string, x: number, z: number }) => {
+  const texture = React.useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = 600;
+    c.height = 120;
+    const q = c.getContext("2d");
+    if (q) {
+      q.fillStyle = "rgba(85, 90, 95, 0.9)";
+      if (q.roundRect) {
+         q.roundRect(8, 8, 584, 104, 18);
+      } else {
+         q.fillRect(8, 8, 584, 104);
+      }
+      q.fill();
+      q.fillStyle = "#fff";
+      q.textAlign = "center";
+      q.textBaseline = "middle";
+      const lines = text.split('\n');
+      if (lines.length === 1) {
+        q.font = "bold 30px Arial";
+        q.fillText(lines[0], 300, 60);
+      } else {
+        q.font = "bold 28px Arial";
+        q.fillText(lines[0], 300, 45);
+        q.font = "normal 22px Arial";
+        q.fillStyle = "#cbd0d6";
+        q.fillText(lines[1], 300, 80);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
+  }, [text]);
+
+  // Reduced scale as requested
+  return (
+    <sprite position={[x, 3.2, z]} scale={[3.0, 0.6, 1]}>
+      <spriteMaterial map={texture} transparent />
+    </sprite>
+  );
 };

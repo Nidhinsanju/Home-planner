@@ -1,4 +1,3 @@
-import React from 'react';
 import { MAT } from './constants';
 
 export const StaticWalls = () => {
