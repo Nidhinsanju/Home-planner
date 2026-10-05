@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -6,7 +8,6 @@ import { UI, Compass } from './UI';
 import { DPad } from './DPad';
 import { Scene } from './Scene';
 import * as THREE from 'three';
-import './index.css';
 
 const CameraController = ({ view, panState, onRotationChange }: any) => {
   const { camera, controls } = useThree();
