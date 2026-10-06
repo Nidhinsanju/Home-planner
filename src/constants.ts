@@ -33,10 +33,11 @@ export const initialRoomState = [
 ];
 
 export const LEGO_TYPES = [
-  { id: 'floor', name: 'Floor Block', args: [1, 0.16, 1], mat: 'living', y: 0.08 },
-  { id: 'wall', name: 'Wall Block', args: [1, 2.7, 1], mat: 'wall2', y: 1.35 },
-  { id: 'table', name: 'Table Block', args: [1, 1.0, 1], mat: 'wood', y: 0.5 },
-  { id: 'glass', name: 'Glass Block', args: [1, 2.7, 1], mat: 'glass', y: 1.35 },
+  { id: 'floor', name: 'Floor', category: 'Floors', args: [1, 0.16, 1], mat: 'living', y: 0.08 },
+  { id: 'wall_block', name: 'Wall Block', category: 'Walls', args: [1, 2.7, 1], mat: 'wall', y: 1.35 },
+  { id: 'wall_draw', name: 'Wall', category: 'Walls', args: [0,0,0], mat: 'wall2', y: 0 },
+  { id: 'door', name: 'Door', category: 'Openings', args: [0,0,0], mat: 'wood', y: 0 },
+  { id: 'window', name: 'Window', category: 'Openings', args: [0,0,0], mat: 'glass', y: 0 },
 ];
 
 export const exampleBuildingModel: BuildingModel = {

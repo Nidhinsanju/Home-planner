@@ -34,6 +34,7 @@ export interface Wall {
   end: Point2D;
   thickness: number;
   height: number;
+  raise: number;
   style: string;
 }
 
@@ -90,4 +91,5 @@ export interface BuildingModel {
   windows: Window[];
   stairs: Stair[];
   furniture: Furniture[];
+  surfaces?: any[];
 }
