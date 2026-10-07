@@ -1,14 +1,16 @@
 import mongoose from 'mongoose';
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/vastu-3d-visualizer';
-
+// `plan` is the current format (see src/plan/types.ts). The array fields are the legacy
+// format, still read so older saves can be migrated on load.
 export type BuildData = {
-  rooms: any[];
-  walls: any[];
-  surfaces: any[];
-  doors: any[];
-  windows: any[];
-  assets: any[];
+  plan?: any;
+  rooms?: any[];
+  walls?: any[];
+  surfaces?: any[];
+  doors?: any[];
+  windows?: any[];
+  assets?: any[];
+  plot?: { width: number; depth: number };
 };
 
 export type UserType = {
@@ -58,6 +60,8 @@ const buildDataSchema = new mongoose.Schema({
   doors: { type: Array, default: [] },
   windows: { type: Array, default: [] },
   assets: { type: Array, default: [] },
+  plot: { width: Number, depth: Number },
+  plan: { type: mongoose.Schema.Types.Mixed },
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({

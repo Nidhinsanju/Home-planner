@@ -1,0 +1,630 @@
+'use client';
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall } from '../plan/types';
+import { detectRooms, detectSpaces, Room, roomAt } from '../plan/rooms';
+import * as ops from '../plan/ops';
+import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
+import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
+
+export type Tool = 'select' | 'wall' | 'room' | 'door' | 'window' | `item:${string}`;
+// 'space' is an area enclosed by walls that hasn't been made a room.
+export type Selection = { kind: 'room' | 'space' | 'wall' | 'corner' | 'opening' | 'item'; id: string } | null;
+
+interface Props {
+  plan: Plan;
+  spaces: Room[]; // every enclosed area; the ones with a label are rooms
+  unit: DisplayUnit;
+  tool: Tool;
+  setTool: (t: Tool) => void;
+  selection: Selection;
+  setSelection: (s: Selection) => void;
+  onCommit: (next: Plan) => void;
+  readOnly: boolean;
+  wallDims: { thickness: number; height: number };
+}
+
+type Drag =
+  | { mode: 'pan'; startPx: Vec; startView: View; target?: Selection }
+  | { mode: 'corner' | 'wall' | 'opening' | 'item'; id: string; startPx: Vec; startWorld: Vec; moved: boolean }
+  | { mode: 'room'; start: Vec };
+
+type View = { cx: number; cy: number; scale: number }; // scale = pixels per foot
+
+const HINTS: Record<string, string> = {
+  select: 'Click to select. Drag corners, walls, doors and furniture to move them. Drag empty space to pan, scroll to zoom.',
+  wall: 'Click to start a wall, click again for each corner. Type a length + Enter for exact size. Double-click or Esc to finish. Closed walls make a space: click inside it to make it a room.',
+  room: 'Drag a rectangle to draw a room. It connects to walls it touches.',
+  door: 'Click on a wall to place a door.',
+  window: 'Click on a wall to place a window.',
+  item: 'Click to place. Press Esc to stop.',
+};
+
+export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims }: Props) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 800, h: 600 });
+  const [view, setView] = useState<View>({ cx: 0, cy: 0, scale: 14 });
+  const [draft, setDraftState] = useState<Plan | null>(null);
+  // Mirrors draft synchronously: a fast release can fire pointerup before the last move re-renders.
+  const draftRef = useRef<Plan | null>(null);
+  const setDraft = (p: Plan | null) => { draftRef.current = p; setDraftState(p); };
+  const [cursor, setCursor] = useState<Vec | null>(null);
+  const [chain, setChain] = useState<Vec[]>([]); // wall tool: points placed so far
+  const [typed, setTyped] = useState(''); // wall tool: typed length
+  const [roomRect, setRoomRect] = useState<{ a: Vec; b: Vec } | null>(null);
+  const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
+  const [hover, setHover] = useState<Selection>(null);
+  const [showDims, setShowDims] = useState(true);
+  const drag = useRef<Drag | null>(null);
+  const spaceDown = useRef(false);
+  const altDown = useRef(false);
+
+  const shown = draft ?? plan;
+  const shownSpaces = useMemo(() => (draft ? detectSpaces(draft) : spaces), [draft, spaces]);
+  const shownRooms = shownSpaces.filter(r => r.label);
+  const emptySpaces = shownSpaces.filter(r => !r.label);
+  const px = (n: number) => n / view.scale;
+  const step = snapStep(unit);
+
+  // ---- view -----------------------------------------------------------------------------
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth || 800, h: el.clientHeight || 600 }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const fitView = useCallback(() => {
+    const pts: Vec[] = [...plan.corners, ...plan.items];
+    const hw = plan.plot.width / 2;
+    const hd = plan.plot.depth / 2;
+    pts.push({ x: -hw, y: -hd }, { x: hw, y: hd });
+    const xs = pts.map(p => p.x);
+    const ys = pts.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const scale = Math.min(size.w / (maxX - minX + 10), size.h / (maxY - minY + 10));
+    setView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, scale: Math.max(3, Math.min(60, scale)) });
+  }, [plan, size]);
+
+  // Fit once the container has its real size.
+  const fitted = useRef(false);
+  useEffect(() => {
+    if (!fitted.current && size.w !== 800) {
+      fitted.current = true;
+      fitView();
+    }
+  }, [size, fitView]);
+
+  const toWorld = (clientX: number, clientY: number): Vec => {
+    const svg = svgRef.current;
+    const ctm = svg?.getScreenCTM();
+    if (!svg || !ctm) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const p = pt.matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  };
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const w = toWorld(e.clientX, e.clientY);
+      setView(v => {
+        const scale = Math.max(2, Math.min(200, v.scale * Math.exp(-e.deltaY * 0.0015)));
+        return { scale, cx: w.x - ((w.x - v.cx) * v.scale) / scale, cy: w.y - ((w.y - v.cy) * v.scale) / scale };
+      });
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  });
+
+  // ---- snapping -------------------------------------------------------------------------
+
+  const snap = (p: Vec, opts: { from?: Vec; exclude?: string } = {}) => {
+    const g: { x?: number; y?: number } = {};
+    if (altDown.current) return { point: p, guides: g };
+    const corner = shown.corners.find(c => c.id !== opts.exclude && dist(c, p) < px(10));
+    if (corner) return { point: { x: corner.x, y: corner.y }, cornerId: corner.id, guides: g };
+    for (const w of shown.walls) {
+      if (opts.exclude && (w.a === opts.exclude || w.b === opts.exclude)) continue;
+      const { a, b } = ops.wallEnds(shown, w);
+      const hit = closestOnSegment(p, a, b);
+      if (hit.distance < px(8)) return { point: hit.point, wallId: w.id, guides: g };
+    }
+    const q = { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step };
+    const refs = opts.from ? [opts.from, ...shown.corners] : shown.corners;
+    for (const r of refs) {
+      if (g.x === undefined && Math.abs(q.x - r.x) < px(8)) { q.x = r.x; g.x = r.x; }
+      if (g.y === undefined && Math.abs(q.y - r.y) < px(8)) { q.y = r.y; g.y = r.y; }
+    }
+    return { point: q, guides: g };
+  };
+
+  const wallUnder = (p: Vec) => {
+    let best: { wall: Wall; point: Vec; d: number } | null = null;
+    for (const w of shown.walls) {
+      const { a, b } = ops.wallEnds(shown, w);
+      const hit = closestOnSegment(p, a, b);
+      if (hit.distance < Math.max(w.thickness, px(14)) && (!best || hit.distance < best.d)) best = { wall: w, point: hit.point, d: hit.distance };
+    }
+    return best;
+  };
+
+  // ---- wall tool helpers ----------------------------------------------------------------
+
+  const placeWallPoint = (p: Vec, closesChain: boolean) => {
+    const last = chain[chain.length - 1];
+    if (!last) {
+      setChain([p]);
+      return;
+    }
+    if (dist(last, p) < 0.05) {
+      setChain([]); // double click on the same point finishes
+      return;
+    }
+    onCommit(ops.addWall(plan, last, p, wallDims).plan);
+    setChain(closesChain ? [] : [...chain, p]);
+    setTyped('');
+  };
+
+  const finishTool = useCallback(() => {
+    setChain([]);
+    setTyped('');
+    setRoomRect(null);
+    setDraft(null);
+    drag.current = null;
+  }, []);
+
+  useEffect(() => finishTool(), [tool, finishTool]);
+
+  // ---- keyboard -------------------------------------------------------------------------
+
+  useEffect(() => {
+    const isField = (t: EventTarget | null) => t instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName);
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') altDown.current = true;
+      if (isField(e.target)) return;
+      if (e.key === ' ') { spaceDown.current = true; e.preventDefault(); }
+      if (e.ctrlKey || e.metaKey) return;
+
+      if (tool === 'wall' && chain.length > 0) {
+        if (/^[0-9.]$/.test(e.key)) { setTyped(t => t + e.key); return; }
+        if (e.key === 'Backspace') { setTyped(t => t.slice(0, -1)); e.preventDefault(); return; }
+        if (e.key === 'Enter' && typed && cursor) {
+          const L = fromDisplay(parseFloat(typed), unit);
+          const last = chain[chain.length - 1];
+          const d = sub(cursor, last);
+          const l = Math.hypot(d.x, d.y);
+          if (L > 0 && l > 0) placeWallPoint({ x: last.x + (d.x / l) * L, y: last.y + (d.y / l) * L }, false);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        if (chain.length || roomRect) finishTool();
+        else if (tool !== 'select') setTool('select');
+        else setSelection(null);
+        return;
+      }
+      if (readOnly) return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selection) {
+        e.preventDefault();
+        deleteSelection();
+        return;
+      }
+      if (selection?.kind === 'item' && (e.key === 'r' || e.key === 'R')) {
+        const item = plan.items.find(i => i.id === selection.id);
+        if (item) onCommit(ops.updateItem(plan, item.id, { rotation: item.rotation + (Math.PI / 12) * (e.shiftKey ? -1 : 1) }));
+        return;
+      }
+      if (selection?.kind === 'item' && e.key.startsWith('Arrow')) {
+        e.preventDefault();
+        const item = plan.items.find(i => i.id === selection.id);
+        const d = { ArrowLeft: { x: -step, y: 0 }, ArrowRight: { x: step, y: 0 }, ArrowUp: { x: 0, y: -step }, ArrowDown: { x: 0, y: step } }[e.key];
+        if (item && d) onCommit(ops.updateItem(plan, item.id, add(item, d)));
+        return;
+      }
+      if (e.key === 'w' || e.key === 'W') setTool('wall');
+      else if (e.key === 'r' || e.key === 'R') setTool('room');
+      else if (e.key === '.') fitView();
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === ' ') spaceDown.current = false;
+      if (e.key === 'Alt') altDown.current = false;
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  });
+
+  const deleteSelection = () => {
+    if (!selection) return;
+    const { kind, id } = selection;
+    if (kind === 'wall') onCommit(ops.deleteWalls(plan, [id]));
+    else if (kind === 'opening') onCommit(ops.deleteOpening(plan, id));
+    else if (kind === 'item') onCommit(ops.deleteItem(plan, id));
+    else if (kind === 'corner') onCommit(ops.deleteWalls(plan, plan.walls.filter(w => w.a === id || w.b === id).map(w => w.id)));
+    else if (kind === 'room') {
+      const room = spaces.find(r => r.id === id && r.label);
+      if (room) onCommit(ops.deleteRoom(plan, room));
+    }
+    setSelection(null);
+  };
+
+  // ---- pointer --------------------------------------------------------------------------
+
+  const targetOf = (e: React.PointerEvent): Selection => {
+    const el = (e.target as Element).closest('[data-kind]');
+    if (!el) return null;
+    return { kind: el.getAttribute('data-kind') as any, id: el.getAttribute('data-id')! };
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    const world = toWorld(e.clientX, e.clientY);
+    const startPx = { x: e.clientX, y: e.clientY };
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
+      drag.current = { mode: 'pan', startPx, startView: view };
+      return;
+    }
+    if (e.button !== 0) return;
+
+    if (!readOnly && tool === 'wall') {
+      const s = snap(world, { from: chain[chain.length - 1] });
+      const hitsExisting = chain.length > 0 && (!!s.cornerId || !!s.wallId);
+      placeWallPoint(s.point, hitsExisting);
+      return;
+    }
+    if (!readOnly && tool === 'room') {
+      drag.current = { mode: 'room', start: snap(world).point };
+      return;
+    }
+    if (!readOnly && (tool === 'door' || tool === 'window')) {
+      const hit = wallUnder(world);
+      if (hit) onCommit(ops.addOpening(plan, hit.wall.id, hit.point, tool));
+      return;
+    }
+    if (!readOnly && tool.startsWith('item:')) {
+      const type = tool.slice(5);
+      const next = ops.addItem(plan, type, snap(world).point);
+      onCommit(next);
+      setSelection({ kind: 'item', id: next.items[next.items.length - 1].id });
+      setTool('select');
+      return;
+    }
+
+    const target = targetOf(e);
+    if (target && target.kind !== 'room' && target.kind !== 'space' && !readOnly) {
+      setSelection(target.kind === 'corner' ? selection : target);
+      drag.current = { mode: target.kind as 'corner', id: target.id, startPx, startWorld: world, moved: false };
+      return;
+    }
+    drag.current = { mode: 'pan', startPx, startView: view, target };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const world = toWorld(e.clientX, e.clientY);
+    setCursor(world);
+    const d = drag.current;
+
+    if (!d) {
+      if (tool === 'wall') setGuides(snap(world, { from: chain[chain.length - 1] }).guides);
+      if (tool === 'select') setHover(targetOf(e));
+      return;
+    }
+    if (d.mode === 'pan') {
+      const v = d.startView;
+      setView({ ...v, cx: v.cx - (e.clientX - d.startPx.x) / v.scale, cy: v.cy - (e.clientY - d.startPx.y) / v.scale });
+      return;
+    }
+    if (d.mode === 'room') {
+      const s = snap(world);
+      setGuides(s.guides);
+      setRoomRect({ a: d.start, b: s.point });
+      return;
+    }
+    if (!d.moved && Math.hypot(e.clientX - d.startPx.x, e.clientY - d.startPx.y) < 4) return;
+    d.moved = true;
+    const delta = sub(world, d.startWorld);
+
+    if (d.mode === 'corner') {
+      const s = snap(world, { exclude: d.id });
+      setGuides(s.guides);
+      setDraft(ops.moveCorner(plan, d.id, s.point));
+    } else if (d.mode === 'wall') {
+      const wall = plan.walls.find(w => w.id === d.id);
+      if (!wall) return;
+      const along = Math.round(dot(delta, ops.wallNormal(plan, wall)) / step) * step;
+      setDraft(ops.offsetWall(plan, d.id, along));
+    } else if (d.mode === 'opening') {
+      setDraft(ops.moveOpeningTo(plan, d.id, world));
+    } else if (d.mode === 'item') {
+      const item = plan.items.find(i => i.id === d.id);
+      if (!item) return;
+      const p = add(item, delta);
+      setDraft(ops.updateItem(plan, d.id, { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step }));
+    }
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    drag.current = null;
+    setGuides({});
+    if (!d) return;
+
+    if (d.mode === 'pan') {
+      const clicked = Math.hypot(e.clientX - d.startPx.x, e.clientY - d.startPx.y) < 4;
+      if (clicked && tool === 'select') setSelection(d.target ?? null);
+      return;
+    }
+    if (d.mode === 'room') {
+      const rect = roomRect;
+      setRoomRect(null);
+      if (!rect) return;
+      const width = Math.abs(rect.b.x - rect.a.x);
+      const depth = Math.abs(rect.b.y - rect.a.y);
+      if (width < 2 || depth < 2) return;
+      const center = { x: (rect.a.x + rect.b.x) / 2, y: (rect.a.y + rect.b.y) / 2 };
+      const next = ops.addRectRoom(plan, { ...center, width, depth }, wallDims);
+      onCommit(next);
+      const room = roomAt(detectRooms(next), center);
+      setSelection(room ? { kind: 'room', id: room.id } : null);
+      setTool('select');
+      return;
+    }
+    if (!d.moved) {
+      if (d.mode === 'corner') setSelection({ kind: 'corner', id: d.id });
+      return;
+    }
+    const final = draftRef.current;
+    if (final) {
+      let next = final;
+      if (d.mode === 'corner') next = ops.settleCorner(final, d.id);
+      if (d.mode === 'wall') {
+        const wall = final.walls.find(w => w.id === d.id);
+        if (wall) next = ops.settleCorner(ops.settleCorner(final, wall.a), wall.b);
+      }
+      onCommit(next);
+    }
+    setDraft(null);
+  };
+
+  // ---- rendering ------------------------------------------------------------------------
+
+  const vb = `${view.cx - size.w / 2 / view.scale} ${view.cy - size.h / 2 / view.scale} ${size.w / view.scale} ${size.h / view.scale}`;
+  const selRoom = selection?.kind === 'room' ? shownRooms.find(r => r.id === selection.id) : undefined;
+  const dimWalls = new Set<string>([
+    ...(showDims ? shown.walls.filter(w => ops.wallLength(shown, w) * view.scale > 40).map(w => w.id) : []),
+    ...(selection?.kind === 'wall' ? [selection.id] : []),
+    ...(hover?.kind === 'wall' ? [hover.id] : []),
+    ...(selRoom ? selRoom.wallIds : []),
+  ]);
+  const gridStep = unit === 'mt' ? 3.28084 : 1;
+  const major = gridStep * 5;
+  const fs = px(12);
+  const last = chain[chain.length - 1];
+  const preview = tool === 'wall' && last && cursor ? snap(cursor, { from: last }).point : null;
+  const hoverWall = (tool === 'door' || tool === 'window') && cursor ? wallUnder(cursor) : null;
+  const hoverItem = tool.startsWith('item:') && cursor ? itemSpec(tool.slice(5)) : undefined;
+
+  const lengthLabel = (a: Vec, b: Vec, offset: number, key: string, color = '#3b4048') => {
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    let ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+    if (ang > 90 || ang < -90) ang += 180;
+    const l = dist(a, b) || 1;
+    const n = { x: -(b.y - a.y) / l, y: (b.x - a.x) / l };
+    const p = { x: mid.x + n.x * offset, y: mid.y + n.y * offset };
+    return (
+      <text key={key} x={p.x} y={p.y} fontSize={fs * 0.9} fill={color} textAnchor="middle" dominantBaseline="middle"
+        transform={`rotate(${ang} ${p.x} ${p.y})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
+        {formatLength(dist(a, b), unit)}
+      </text>
+    );
+  };
+
+  return (
+    <div ref={boxRef} className="editor2d">
+      <svg
+        ref={svgRef}
+        viewBox={vb}
+        width="100%"
+        height="100%"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => setCursor(null)}
+        style={{ cursor: tool === 'select' ? (drag.current?.mode === 'pan' ? 'grabbing' : 'default') : 'crosshair', display: 'block' }}
+      >
+        <defs>
+          <pattern id="grid-minor" width={gridStep} height={gridStep} patternUnits="userSpaceOnUse">
+            <path d={`M ${gridStep} 0 L 0 0 0 ${gridStep}`} fill="none" stroke="#e6e8eb" strokeWidth={px(1)} />
+          </pattern>
+          <pattern id="grid-major" width={major} height={major} patternUnits="userSpaceOnUse">
+            <rect width={major} height={major} fill="url(#grid-minor)" />
+            <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="#cfd3d8" strokeWidth={px(1)} />
+          </pattern>
+        </defs>
+        <rect x={view.cx - size.w / view.scale} y={view.cy - size.h / view.scale} width={(size.w / view.scale) * 2} height={(size.h / view.scale) * 2} fill="#fafafa" />
+        {view.scale > 4 && <rect x={-500} y={-500} width={1000} height={1000} fill="url(#grid-major)" style={{ pointerEvents: 'none' }} />}
+
+        {/* Plot boundary */}
+        <rect x={-shown.plot.width / 2} y={-shown.plot.depth / 2} width={shown.plot.width} height={shown.plot.depth}
+          fill="none" stroke="#9aa3ad" strokeDasharray={`${px(6)} ${px(4)}`} strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+
+        {/* Enclosed spaces that aren't rooms yet: clickable, highlighted on hover/selection */}
+        {emptySpaces.map(sp => {
+          const sel = selection?.kind === 'space' && selection.id === sp.id;
+          const hov = hover?.kind === 'space' && hover.id === sp.id;
+          return (
+            <polygon key={sp.key} data-kind="space" data-id={sp.id} points={sp.polygon.map(p => `${p.x},${p.y}`).join(' ')}
+              fill={sel ? 'rgba(59,130,246,0.14)' : hov ? 'rgba(59,130,246,0.06)' : 'transparent'}
+              stroke={sel ? '#3b82f6' : 'none'} strokeWidth={px(2)} strokeDasharray={`${px(6)} ${px(4)}`} />
+          );
+        })}
+
+        {/* Rooms */}
+        {shownRooms.map(r => (
+          <polygon key={r.key} data-kind="room" data-id={r.id} points={r.polygon.map(p => `${p.x},${p.y}`).join(' ')}
+            fill={roomType(r.label?.type)?.color ?? UNNAMED_ROOM_COLOR}
+            stroke={selRoom?.key === r.key ? '#3b82f6' : 'none'} strokeWidth={px(3)} />
+        ))}
+
+        {/* Furniture */}
+        {shown.items.map(item => {
+          const spec = itemSpec(item.type);
+          if (!spec) return null;
+          const sel = selection?.kind === 'item' && selection.id === item.id;
+          return (
+            <g key={item.id} data-kind="item" data-id={item.id} transform={`translate(${item.x} ${item.y}) rotate(${(item.rotation * 180) / Math.PI})`} style={{ cursor: readOnly ? 'default' : 'move' }}>
+              <rect x={-spec.w / 2} y={-spec.d / 2} width={spec.w} height={spec.d} rx={Math.min(spec.w, spec.d) * 0.08}
+                fill={spec.color} fillOpacity={0.85} stroke={sel ? '#3b82f6' : '#55595f'} strokeWidth={px(sel ? 2.5 : 1)} />
+              <text fontSize={Math.min(fs * 0.85, spec.w / 4)} textAnchor="middle" dominantBaseline="middle" fill="#1f2328" style={{ pointerEvents: 'none', userSelect: 'none' }}>{spec.name}</text>
+            </g>
+          );
+        })}
+
+        {/* Walls */}
+        {shown.walls.map(w => {
+          const { a, b } = ops.wallEnds(shown, w);
+          const sel = selection?.kind === 'wall' && selection.id === w.id;
+          const hov = hover?.kind === 'wall' && hover.id === w.id;
+          return (
+            <g key={w.id} data-kind="wall" data-id={w.id} style={{ cursor: readOnly ? 'default' : 'move' }}>
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={Math.max(w.thickness, px(12))} />
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#23262b'} strokeWidth={Math.max(w.thickness, px(2))} strokeLinecap="square" />
+            </g>
+          );
+        })}
+
+        {/* Doors & windows */}
+        {shown.openings.map(o => {
+          const wall = shown.walls.find(w => w.id === o.wallId);
+          if (!wall) return null;
+          const { a, b } = ops.wallEnds(shown, wall);
+          const c = ops.openingCenter(shown, o);
+          const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+          const sel = selection?.kind === 'opening' && selection.id === o.id;
+          const w = o.width;
+          const th = wall.thickness + px(1);
+          const s = o.flip ? -1 : 1;
+          return (
+            <g key={o.id} data-kind="opening" data-id={o.id} transform={`translate(${c.x} ${c.y}) rotate(${ang})`} style={{ cursor: readOnly ? 'default' : 'ew-resize' }}>
+              <rect x={-w / 2} y={-th / 2} width={w} height={th} fill={o.kind === 'window' ? '#bfe3f5' : '#fafafa'} stroke={sel ? '#3b82f6' : '#23262b'} strokeWidth={px(sel ? 2 : 1)} />
+              {o.kind === 'window' && <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke="#23262b" strokeWidth={px(1)} />}
+              {o.kind === 'door' && (
+                <>
+                  <line x1={-w / 2} y1={0} x2={-w / 2} y2={s * w} stroke={sel ? '#3b82f6' : '#23262b'} strokeWidth={px(1.5)} />
+                  <path d={`M ${w / 2} 0 A ${w} ${w} 0 0 ${s > 0 ? 1 : 0} ${-w / 2} ${s * w}`} fill="none" stroke="#8a9199" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(2)}`} />
+                </>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Room names */}
+        {shownRooms.map(r => (
+          <g key={`label-${r.key}`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
+            <text x={r.center.x} y={r.center.y - fs * 0.6} fontSize={fs} fontWeight={600} fill="#2b2f36" textAnchor="middle">
+              {r.label?.name || roomType(r.label?.type)?.name || 'Room'}
+            </text>
+            <text x={r.center.x} y={r.center.y + fs * 0.7} fontSize={fs * 0.85} fill="#5b616b" textAnchor="middle">
+              {formatArea(r.area, unit)}
+            </text>
+          </g>
+        ))}
+
+        {emptySpaces.filter(sp => (selection?.kind === 'space' && selection.id === sp.id) || (hover?.kind === 'space' && hover.id === sp.id)).map(sp => (
+          <text key={`space-${sp.key}`} x={sp.center.x} y={sp.center.y} fontSize={fs * 0.9} fill="#2563eb" textAnchor="middle" style={{ pointerEvents: 'none', userSelect: 'none' }}>
+            Empty space
+          </text>
+        ))}
+
+        {/* Dimensions */}
+        {shown.walls.filter(w => dimWalls.has(w.id)).map(w => {
+          const { a, b } = ops.wallEnds(shown, w);
+          return lengthLabel(a, b, w.thickness / 2 + px(10), `dim-${w.id}`);
+        })}
+
+        {/* Corners */}
+        {!readOnly && tool === 'select' && shown.corners.map(c => {
+          const sel = selection?.kind === 'corner' && selection.id === c.id;
+          const hov = hover?.kind === 'corner' && hover.id === c.id;
+          return (
+            <circle key={c.id} data-kind="corner" data-id={c.id} cx={c.x} cy={c.y} r={px(sel || hov ? 6 : 4)}
+              fill={sel ? '#3b82f6' : '#fff'} stroke="#3b82f6" strokeWidth={px(1.5)} style={{ cursor: 'grab' }} />
+          );
+        })}
+
+        {/* Snap guides */}
+        {guides.x !== undefined && <line x1={guides.x} y1={-500} x2={guides.x} y2={500} stroke="#38bdf8" strokeWidth={px(1)} style={{ pointerEvents: 'none' }} />}
+        {guides.y !== undefined && <line x1={-500} y1={guides.y} x2={500} y2={guides.y} stroke="#38bdf8" strokeWidth={px(1)} style={{ pointerEvents: 'none' }} />}
+
+        {/* Wall tool preview */}
+        {chain.length > 0 && (
+          <polyline points={chain.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#3b82f6" strokeWidth={wallDims.thickness} style={{ pointerEvents: 'none' }} />
+        )}
+        {preview && last && (
+          <g style={{ pointerEvents: 'none' }}>
+            <line x1={last.x} y1={last.y} x2={preview.x} y2={preview.y} stroke="#3b82f6" strokeOpacity={0.6} strokeWidth={wallDims.thickness} />
+            {lengthLabel(last, preview, wallDims.thickness / 2 + px(12), 'preview-dim', '#1d4ed8')}
+          </g>
+        )}
+        {tool === 'wall' && cursor && !last && (
+          <circle cx={snap(cursor).point.x} cy={snap(cursor).point.y} r={px(5)} fill="#3b82f6" style={{ pointerEvents: 'none' }} />
+        )}
+
+        {/* Room tool preview */}
+        {roomRect && (() => {
+          const x = Math.min(roomRect.a.x, roomRect.b.x);
+          const y = Math.min(roomRect.a.y, roomRect.b.y);
+          const w = Math.abs(roomRect.b.x - roomRect.a.x);
+          const h = Math.abs(roomRect.b.y - roomRect.a.y);
+          return (
+            <g style={{ pointerEvents: 'none' }}>
+              <rect x={x} y={y} width={w} height={h} fill="#3b82f6" fillOpacity={0.12} stroke="#3b82f6" strokeWidth={wallDims.thickness} />
+              {lengthLabel({ x, y }, { x: x + w, y }, -px(14), 'rw', '#1d4ed8')}
+              {lengthLabel({ x: x + w, y }, { x: x + w, y: y + h }, -px(14), 'rh', '#1d4ed8')}
+            </g>
+          );
+        })()}
+
+        {/* Door / window placement preview */}
+        {hoverWall && (() => {
+          const { a, b } = ops.wallEnds(shown, hoverWall.wall);
+          const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+          const w = tool === 'door' ? 3 : 4;
+          return (
+            <rect x={-w / 2} y={-hoverWall.wall.thickness} width={w} height={hoverWall.wall.thickness * 2} fill="#3b82f6" fillOpacity={0.5}
+              transform={`translate(${hoverWall.point.x} ${hoverWall.point.y}) rotate(${ang})`} style={{ pointerEvents: 'none' }} />
+          );
+        })()}
+
+        {/* Furniture placement preview */}
+        {hoverItem && cursor && (
+          <rect x={snap(cursor).point.x - hoverItem.w / 2} y={snap(cursor).point.y - hoverItem.d / 2} width={hoverItem.w} height={hoverItem.d}
+            fill={hoverItem.color} fillOpacity={0.5} stroke="#3b82f6" strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+        )}
+      </svg>
+
+      <div className="editor2d-zoom">
+        <button onClick={() => setView(v => ({ ...v, scale: Math.min(200, v.scale * 1.25) }))} title="Zoom in">+</button>
+        <button onClick={() => setView(v => ({ ...v, scale: Math.max(2, v.scale / 1.25) }))} title="Zoom out">−</button>
+        <button onClick={fitView} title="Fit plan (.)">⤢</button>
+        <button onClick={() => setShowDims(s => !s)} title="Toggle dimensions" style={{ color: showDims ? '#3b82f6' : undefined }}>↔</button>
+      </div>
+      <div className="editor2d-north" title="North is up">N ↑</div>
+      <div className="editor2d-hint">
+        {readOnly ? 'Example plan is read-only. Switch to P1 or P2 in the Project tab to edit.' : HINTS[tool.startsWith('item:') ? 'item' : tool]}
+        {typed && <strong style={{ marginLeft: 8, color: '#3b82f6' }}>Length: {typed} {unit === 'mt' ? 'm' : 'ft'} ↵</strong>}
+      </div>
+    </div>
+  );
+}

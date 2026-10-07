@@ -4,6 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Vastu 3D Visualizer',
   description: 'A 3D Vastu compliant home planning application',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({

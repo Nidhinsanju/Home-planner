@@ -1,414 +1,219 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import type { BuildingModel } from './types';
-import { saveBuild } from './actions/build';
-import { emptyBuildingModel, exampleBuildingModel, MAT } from './constants';
-import { TopBar, Sidebar, Compass, ChatSidebar } from './UI';
-import { DPad } from './DPad';
-import { Scene } from './Scene';
 import * as THREE from 'three';
+import { saveBuild } from './actions/build';
+import { TopBar, Compass, ChatSidebar } from './UI';
+import { DPad } from './DPad';
+import { Editor2D, Selection, Tool } from './editor/Editor2D';
+import { View3D } from './editor/View3D';
+import { Sidebar } from './editor/Sidebar';
+import { Plan, WALL_DEFAULTS } from './plan/types';
+import { detectRooms, detectSpaces, roomAt } from './plan/rooms';
+import { reconcileLabels } from './plan/ops';
+import { examplePlan, planFromBuild } from './plan/migrate';
+import { applyCommands, BuildCommand, describePlan } from './plan/commands';
+import { DisplayUnit } from './units';
 import './index.css';
 
-const CameraController = ({ view, panState, onRotationChange, isInteracting }: any) => {
+// Frames the plan on first render, then handles D-pad panning and compass rotation.
+const CameraController = ({ plan, panState, onRotationChange, isInteracting }: any) => {
   const { camera, controls } = useThree();
-  const [lastView, setLastView] = useState(view);
-
+  const framed = useRef(false);
   useFrame(() => {
-    if (view !== lastView) {
-      if (view === '3d') {
-        camera.position.set(46, 37, 46);
-        if(controls && (controls as any).target) (controls as any).target.set(0, 2, 0);
-      } else {
-        camera.position.set(0, 67, 0.01);
-        if(controls && (controls as any).target) (controls as any).target.set(0, 0, 0);
-      }
-      setLastView(view);
+    if (!controls) return;
+    const c = controls as any;
+    if (!framed.current) {
+      framed.current = true;
+      const pts: { x: number; y: number }[] = [...plan.corners, ...plan.items];
+      if (pts.length === 0) pts.push({ x: -plan.plot.width / 2, y: -plan.plot.depth / 2 }, { x: plan.plot.width / 2, y: plan.plot.depth / 2 });
+      const xs = pts.map(p => p.x);
+      const ys = pts.map(p => p.y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cz = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const size = Math.max(20, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+      c.target.set(cx, 0, cz);
+      camera.position.set(cx + size * 0.75, size * 0.85, cz + size * 0.95);
+      c.update();
     }
-
-    if (controls) {
-      onRotationChange((controls as any).getAzimuthalAngle());
-      
-      let mx = 0, mz = 0;
-      if (panState.up) mz -= 1;
-      if (panState.down) mz += 1;
-      if (panState.left) mx -= 1;
-      if (panState.right) mx += 1;
-
-      if (mx !== 0 || mz !== 0) {
-        const angle = (controls as any).getAzimuthalAngle();
-        const v = new THREE.Vector3(mx, 0, mz).applyAxisAngle(new THREE.Vector3(0, 1, 0), angle);
-        const speed = 0.5;
-        camera.position.addScaledVector(v, speed);
-        (controls as any).target.addScaledVector(v, speed);
-      }
+    onRotationChange(c.getAzimuthalAngle());
+    let mx = 0, mz = 0;
+    if (panState.up) mz -= 1;
+    if (panState.down) mz += 1;
+    if (panState.left) mx -= 1;
+    if (panState.right) mx += 1;
+    if (mx !== 0 || mz !== 0) {
+      const v = new THREE.Vector3(mx, 0, mz).applyAxisAngle(new THREE.Vector3(0, 1, 0), c.getAzimuthalAngle());
+      camera.position.addScaledVector(v, 0.5);
+      c.target.addScaledVector(v, 0.5);
     }
   });
-
   return <OrbitControls makeDefault enableDamping enableRotate={!isInteracting} target={[0, 2, 0]} maxPolarAngle={Math.PI / 2.03} />;
 };
 
+type PlanState = { history: Plan[]; index: number };
+const initState = (plan: Plan): PlanState => ({ history: [plan], index: 0 });
+
 function App({ initialUser }: any) {
-  const [activePlanIndex, setActivePlanIndex] = useState<0|1|2>(0);
-  
-  const parseBuild = (build: any) => {
-    if (!build) return { model: emptyBuildingModel, customBlocks: [] as any[] };
-    return {
-      model: {
-        ...emptyBuildingModel,
-        rooms: build.rooms || [],
-        walls: build.walls || [],
-        surfaces: build.surfaces || [],
-        doors: build.doors || [],
-        windows: build.windows || []
-      },
-      customBlocks: build.assets || []
-    };
-  };
+  const [activePlanIndex, setActivePlanIndex] = useState<0 | 1 | 2>(0);
+  const [p1, setP1] = useState(() => initState(planFromBuild(initialUser?.builds?.p1)));
+  const [p2, setP2] = useState(() => initState(planFromBuild(initialUser?.builds?.p2)));
+  const [example] = useState(() => initState(examplePlan()));
+  // Last saved plan per editable slot, to show unsaved changes.
+  const saved = useRef<{ p1: Plan; p2: Plan }>({ p1: p1.history[0], p2: p2.history[0] });
 
-  const [p1State, setP1State] = useState({ history: [parseBuild(initialUser?.builds?.p1)], historyIndex: 0 });
-  const [p2State, setP2State] = useState({ history: [parseBuild(initialUser?.builds?.p2)], historyIndex: 0 });
-  const [exampleState] = useState({ history: [{ model: exampleBuildingModel, customBlocks: [] as any[] }], historyIndex: 0 });
+  const current = activePlanIndex === 0 ? p1 : activePlanIndex === 1 ? p2 : example;
+  const setCurrent = activePlanIndex === 0 ? setP1 : activePlanIndex === 1 ? setP2 : () => {};
+  const readOnly = activePlanIndex === 2;
+  const planKey = activePlanIndex === 0 ? 'p1' : 'p2';
+  const plan = current.history[current.index];
+  const spaces = useMemo(() => detectSpaces(plan), [plan]); // every enclosed area
+  const rooms = useMemo(() => spaces.filter(s => s.label), [spaces]); // the ones marked as rooms
 
-  const currentState = activePlanIndex === 0 ? p1State : activePlanIndex === 1 ? p2State : exampleState;
-  const setCurrentState = activePlanIndex === 0 ? setP1State : activePlanIndex === 1 ? setP2State : () => {};
-
-  const history = currentState.history;
-  const historyIndex = currentState.historyIndex;
-  const { model, customBlocks } = history[historyIndex];
-
-  const handleSwitchPlan = (newIndex: 0|1|2) => {
-    setActivePlanIndex(newIndex);
-    setEraserMode(false);
-    setBuildMode(null);
-    setSelectedItem(null);
-  };
-
-  // Temporarily map the new unified model back to the old rooms array so Scene.tsx doesn't break yet
-  const legacyRooms = model.rooms.map((r:any) => ({
-    id: r.id,
-    name: r.name,
-    cx: r.x,
-    cz: r.y,
-    w: r.width,
-    d: r.depth,
-    type: r.type,
-    // Provide a default material for the old renderer
-    mat: r.type === 'bed' ? MAT.bed : MAT.living, 
-  }));
-
-  const handleUpdateState = (newModel: BuildingModel, newCustomBlocks: any) => {
-    if (activePlanIndex === 2) return;
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ model: newModel, customBlocks: newCustomBlocks });
-    setCurrentState({ history: newHistory, historyIndex: newHistory.length - 1 });
-  };
-
-  const handleSetModel = (newModel: BuildingModel) => handleUpdateState(newModel, customBlocks);
-  const handleSetCustomBlocks = (newCustomBlocks: any) => handleUpdateState(model, newCustomBlocks);
-
-  const handleUndo = () => {
-    if (historyIndex > 0) setCurrentState({ history, historyIndex: historyIndex - 1 });
-  };
-
-  const handleRedo = () => {
-    if (historyIndex < history.length - 1) setCurrentState({ history, historyIndex: historyIndex + 1 });
-  };
-  const [roofOn] = useState(true);
-  const [labelsOn] = useState(true);
-  const [selectedItem, setSelectedItem] = useState<{ id: string, type: string } | null>(null);
-  const [view, setView] = useState<'3d' | 'top'>('3d');
+  const [view, setView] = useState<'2d' | '3d'>('2d');
+  const [unit, setUnit] = useState<DisplayUnit>('ft');
+  const [tool, setTool] = useState<Tool>('select');
+  const [selection, setSelection] = useState<Selection>(null);
+  const [wallDims, setWallDims] = useState({ ...WALL_DEFAULTS });
+  const [cutaway, setCutaway] = useState(true);
   const [rotation, setRotation] = useState(0);
-  const [unit, setUnit] = useState<'ft' | 'mt'>('ft');
-  
-  const [p1Plot, setP1Plot] = useState({ w: 40, d: 30 });
-  const [p2Plot, setP2Plot] = useState({ w: 40, d: 30 });
+  const [panState, setPanState] = useState({ up: false, down: false, left: false, right: false });
+  const [, forceRender] = useState(0);
+
+  const dirty = !readOnly && plan !== saved.current[planKey];
+
+  // Every edit goes through here: one undo step, labels re-attached to their rooms.
+  const commit = (next: Plan) => {
+    if (readOnly || next === plan) return;
+    const reconciled = reconcileLabels(plan, next);
+    const history = [...current.history.slice(0, current.index + 1), reconciled];
+    setCurrent({ history, index: history.length - 1 });
+    // A room's id changes when it gets its first label; keep it selected.
+    if (selection?.kind === 'room') {
+      const before = rooms.find(r => r.id === selection.id);
+      const after = detectRooms(reconciled);
+      if (before && !after.some(r => r.id === selection.id)) {
+        const r = roomAt(after, before.center);
+        setSelection(r ? { kind: 'room', id: r.id } : null);
+      }
+    }
+    return reconciled;
+  };
+
+  const undo = () => current.index > 0 && setCurrent({ ...current, index: current.index - 1 });
+  const redo = () => current.index < current.history.length - 1 && setCurrent({ ...current, index: current.index + 1 });
+
+  const persist = async (p: Plan) => {
+    const token = localStorage.getItem('token') || '';
+    const res = await saveBuild(planKey, { plan: p }, token);
+    if (!res.error) {
+      saved.current[planKey] = p;
+      forceRender(n => n + 1);
+    }
+    return res;
+  };
 
   const handleSave = async () => {
-    if (activePlanIndex === 2) return;
-    const planId = activePlanIndex === 0 ? 'p1' : 'p2';
-    const buildData = {
-      rooms: model.rooms,
-      walls: model.walls,
-      surfaces: model.surfaces,
-      doors: model.doors,
-      windows: model.windows,
-      assets: customBlocks
-    };
-    const token = localStorage.getItem('token') || '';
-    const res = await saveBuild(planId, buildData, token);
+    if (readOnly) return;
+    const res = await persist(plan);
     if (res.error) alert(res.error);
-    else alert('Plan saved successfully!');
   };
 
-  const handleLogout = async () => {
+  const handleSwitchPlan = (i: 0 | 1 | 2) => {
+    setActivePlanIndex(i);
+    setSelection(null);
+    setTool('select');
+  };
+
+  const handleLogout = () => {
+    if (dirty && !window.confirm('You have unsaved changes. Log out anyway?')) return;
     localStorage.removeItem('token');
     window.location.href = '/';
   };
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setSelectedItem(null);
-        setBuildMode(null);
-        setEraserMode(false);
-      }
-      
-      if (e.ctrlKey || e.metaKey) {
-        if (e.key.toLowerCase() === 'z') {
-          e.preventDefault();
-          if (e.shiftKey) handleRedo();
-          else handleUndo();
-        } else if (e.key.toLowerCase() === 'y') {
-          e.preventDefault();
-          handleRedo();
-        }
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if (k === 'y') { e.preventDefault(); redo(); }
+      else if (k === 's') { e.preventDefault(); handleSave(); }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [history, historyIndex]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
-  const plotW = activePlanIndex === 0 ? p1Plot.w : activePlanIndex === 1 ? p2Plot.w : 40;
-  const plotD = activePlanIndex === 0 ? p1Plot.d : activePlanIndex === 1 ? p2Plot.d : 30;
-
-  const setPlotW = (w: any) => activePlanIndex === 0 ? setP1Plot({...p1Plot, w}) : activePlanIndex === 1 ? setP2Plot({...p2Plot, w}) : null;
-  const setPlotD = (d: any) => activePlanIndex === 0 ? setP1Plot({...p1Plot, d}) : activePlanIndex === 1 ? setP2Plot({...p2Plot, d}) : null;
-
-  const [wallThickness, setWallThickness] = useState(0.15);
-  const [wallHeight, setWallHeight] = useState(2.8);
-  const [wallRaise, setWallRaise] = useState(0);
-
-  const [, setBin] = useState<any[]>([]);
-  const [eraserMode, setEraserMode] = useState(false);
-  const [buildMode, setBuildMode] = useState<string | null>(null);
-  
-  const [panState, setPanState] = useState({ up: false, down: false, left: false, right: false });
-
-  const handlePan = (dir: string, active: boolean) => {
-    setPanState(prev => ({ ...prev, [dir]: active }));
-  };
-
-  const handleDeleteRoom = (room: any) => {
-    if (activePlanIndex === 2) return;
-    const newRooms = model.rooms.filter((r: any) => r.id !== room.id);
-    handleSetModel({ ...model, rooms: newRooms });
-    setBin(prev => [...prev, room]);
-  };
-
-
-
-  const handleRemoveBlock = () => {
-    // Left empty for now since room mesh logic will change
-  };
-
-  const handleAddCustomBlock = (x: number, z: number, type: string) => {
-    if (activePlanIndex === 2) return;
-    handleSetCustomBlocks([...customBlocks, { id: Date.now(), x, z, type }]);
-  };
-
-  const handleRemoveCustomBlock = (id: number) => {
-    if (activePlanIndex === 2) return;
-    handleSetCustomBlocks(customBlocks.filter((b: any) => b.id !== id));
-  };
-
-  const handleAddWall = (start: any, end: any) => {
-    if (activePlanIndex === 2) return;
-    const newWall = {
-      id: `wall-${Date.now()}`,
-      type: 'interior' as const,
-      start,
-      end,
-      thickness: wallThickness,
-      height: wallHeight,
-      raise: wallRaise,
-      style: 'default'
+  useEffect(() => {
+    const onUnload = (e: BeforeUnloadEvent) => {
+      if (p1.history[p1.index] !== saved.current.p1 || p2.history[p2.index] !== saved.current.p2) e.preventDefault();
     };
-    handleSetModel({ ...model, walls: [...(model.walls || []), newWall] });
-  };
+    window.addEventListener('beforeunload', onUnload);
+    return () => window.removeEventListener('beforeunload', onUnload);
+  }, [p1, p2]);
 
-  const handleAddOpening = (wallId: string, pt: any, type: string) => {
-    if (activePlanIndex === 2) return;
-    if (type === 'door') {
-      const newDoor = {
-        id: `door-${Date.now()}`,
-        wallId,
-        x: pt.x,
-        y: pt.y,
-        width: 1,
-        height: 2.1,
-        style: 'default',
-        swingDirection: 'in'
-      };
-      handleSetModel({ ...model, doors: [...(model.doors || []), newDoor] });
-    } else if (type === 'window') {
-      const newWindow = {
-        id: `window-${Date.now()}`,
-        wallId,
-        x: pt.x,
-        y: pt.y,
-        width: 1.5,
-        height: 1.2,
-        sillHeight: 0.9,
-        style: 'default'
-      };
-      handleSetModel({ ...model, windows: [...(model.windows || []), newWindow] });
-    }
-  };
+  const sceneData = useMemo(() => describePlan(plan), [plan]);
 
-  const handleRemoveOpening = (id: string, type: string) => {
-    if (activePlanIndex === 2) return;
-    if (type === 'door') {
-      handleSetModel({ ...model, doors: model.doors?.filter((d: any) => d.id !== id) });
-    } else if (type === 'window') {
-      handleSetModel({ ...model, windows: model.windows?.filter((w: any) => w.id !== id) });
-    }
-  };
-
-  const handleUpdateObject = (id: string, type: string, newData: any) => {
-    if (activePlanIndex === 2) return;
-    if (type === 'door') handleSetModel({ ...model, doors: (model.doors||[]).map((d: any) => d.id === id ? { ...d, ...newData } : d) });
-    else if (type === 'window') handleSetModel({ ...model, windows: (model.windows||[]).map((w: any) => w.id === id ? { ...w, ...newData } : w) });
-    else if (type === 'wall') handleSetModel({ ...model, walls: (model.walls||[]).map((w: any) => w.id === id ? { ...w, ...newData } : w) });
-    else if (type === 'room') handleSetModel({ ...model, rooms: (model.rooms||[]).map((r: any) => r.id === id ? { ...r, ...newData } : r) });
-    else if (type === 'custom') handleSetCustomBlocks(customBlocks.map((c: any) => c.id === id ? { ...c, ...newData } : c));
-  };
-
-  const sceneData = {
-    rooms: model.rooms?.map((r: any) => ({ id: r.id, name: r.name, x: r.x, y: r.y, width: r.width, depth: r.depth })) || [],
-    walls: model.walls?.map((w: any) => ({ id: w.id, start: w.start, end: w.end })) || [],
-    doors: model.doors?.map((d: any) => ({ id: d.id, x: d.x, y: d.y })) || [],
-    windows: model.windows?.map((w: any) => ({ id: w.id, x: w.x, y: w.y })) || [],
-    assets: customBlocks.map((c: any) => ({ id: c.id, type: c.type, x: c.x, z: c.z })) || []
-  };
-
-  const handleBuildCommand = (cmd: any) => {
-    if (activePlanIndex === 2) return;
-    
-    if (cmd.action === 'build' || cmd.action === 'addAsset') {
-      if (cmd.type === 'room') {
-        const newRoom = {
-          id: `room-${Date.now()}`,
-          name: 'AI Room',
-          x: cmd.x || 0,
-          y: cmd.y || 0,
-          width: cmd.width || 5,
-          depth: cmd.depth || 5,
-          type: cmd.roomType || 'living'
-        };
-        handleSetModel({ ...model, rooms: [...(model.rooms || []), newRoom] });
-      } else if (cmd.type === 'wall') {
-        handleAddWall({ x: cmd.x || -2, y: cmd.y || 0 }, { x: cmd.endX || 2, y: cmd.endY || 0 }); 
-      } else if (cmd.type === 'door') {
-        if (model.walls && model.walls.length > 0) {
-          handleAddOpening(model.walls[0].id, { x: 0, y: 0 }, 'door');
-        }
-      } else if (cmd.type === 'window') {
-        if (model.walls && model.walls.length > 0) {
-          handleAddOpening(model.walls[0].id, { x: 0, y: 0 }, 'window');
-        }
-      } else if (['tree', 'car', 'sofa', 'bed', 'table', 'plant', 'bench'].includes(cmd.type)) {
-        handleAddCustomBlock(cmd.x || 0, cmd.y || 0, cmd.type);
+  // Applies AI commands as one undo step and saves the result. Returns notes for the chat.
+  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<string[]> => {
+    if (readOnly) return ['The example plan is read-only.'];
+    const { plan: next, errors } = applyCommands(plan, cmds);
+    if (next !== plan) {
+      const reconciled = commit(next);
+      setSelection(null);
+      if (reconciled) {
+        const res = await persist(reconciled);
+        if (res.error) errors.push(`The plan was updated but could not be saved: ${res.error}`);
       }
-    } else if (cmd.action === 'delete') {
-      if (cmd.type === 'door' || cmd.type === 'window') handleRemoveOpening(cmd.id, cmd.type);
-      else if (cmd.type === 'wall') handleSetModel({ ...model, walls: (model.walls||[]).filter((w: any) => w.id !== cmd.id) });
-      else if (cmd.type === 'custom' || ['tree', 'car', 'sofa', 'bed', 'table', 'plant', 'bench'].includes(cmd.type)) handleRemoveCustomBlock(cmd.id);
-      else if (cmd.type === 'room') handleDeleteRoom({ id: cmd.id });
-    } else if (cmd.action === 'deleteAll') {
-      handleSetModel({
-        rooms: [],
-        walls: [],
-        surfaces: [],
-        doors: [],
-        windows: []
-      });
-      handleSetCustomBlocks([]);
-    } else if (cmd.action === 'move') {
-      handleUpdateObject(cmd.id, ['tree', 'car', 'sofa', 'bed', 'table', 'plant', 'bench'].includes(cmd.type) ? 'custom' : cmd.type, { x: cmd.x, y: cmd.y, z: cmd.y });
     }
+    return errors;
   };
 
   return (
     <div className="app-container">
-      <TopBar 
-        view={view} setView={setView} 
-        onUndo={handleUndo} canUndo={historyIndex > 0} 
-        onRedo={handleRedo} canRedo={historyIndex < history.length - 1} 
-        unit={unit} setUnit={setUnit} 
-        onSave={handleSave}
+      <TopBar
+        view={view} setView={setView}
+        onUndo={undo} canUndo={current.index > 0}
+        onRedo={redo} canRedo={current.index < current.history.length - 1}
+        unit={unit} setUnit={setUnit}
+        onSave={readOnly ? undefined : handleSave} dirty={dirty}
         onLogout={handleLogout}
         username={initialUser?.name}
+        cutaway={cutaway} setCutaway={setCutaway}
       />
-      
+
       <div className="main-content">
-        <Sidebar 
-          plotW={plotW} setPlotW={setPlotW}
-          plotD={plotD} setPlotD={setPlotD}
-          unit={unit}
-          buildMode={buildMode} setBuildMode={setBuildMode}
-          eraserMode={eraserMode} setEraserMode={setEraserMode}
-          activePlanIndex={activePlanIndex}
-          onSwitchPlan={handleSwitchPlan}
-          selectedItem={selectedItem}
-          model={model}
-          customBlocks={customBlocks}
-          onUpdateObject={handleUpdateObject}
-          onDeleteObject={(id: string, type: string) => {
-            if (activePlanIndex === 2) return;
-            if (type === 'door' || type === 'window') handleRemoveOpening(id, type);
-            else if (type === 'wall') handleSetModel({ ...model, walls: (model.walls||[]).filter((w: any) => w.id !== id) });
-            else if (type === 'custom') handleRemoveCustomBlock(id as any);
-            else if (type === 'room') handleDeleteRoom({ id });
-            setSelectedItem(null);
-          }}
-          onClearSelection={() => setSelectedItem(null)}
-          wallThickness={wallThickness} setWallThickness={setWallThickness}
-          wallHeight={wallHeight} setWallHeight={setWallHeight}
-          wallRaise={wallRaise} setWallRaise={setWallRaise}
+        <Sidebar
+          plan={plan} rooms={rooms} spaces={spaces} unit={unit}
+          tool={tool} setTool={t => { setTool(t); if (t !== 'select') setView('2d'); }}
+          selection={selection} setSelection={setSelection}
+          onCommit={commit} readOnly={readOnly}
+          activePlanIndex={activePlanIndex} onSwitchPlan={handleSwitchPlan}
+          wallDims={wallDims} setWallDims={setWallDims}
         />
 
         <div className="canvas-container">
-          <Compass rotation={rotation + Math.PI} />
-          {view === '3d' && <DPad onPan={handlePan} />}
-          
-          <Canvas shadows camera={{ position: [46, 37, 46], fov: 42 }}>
-            <CameraController view={view} panState={panState} onRotationChange={setRotation} isInteracting={!!buildMode || eraserMode} />
-            <Scene 
-              rooms={legacyRooms} 
-              setRooms={() => {}} 
-              roofOn={roofOn} 
-              labelsOn={labelsOn} 
-              onSelect={(room: any) => setSelectedItem({ id: room.id, type: 'room' })}
-              onSelectObject={(id: string, type: string) => setSelectedItem({ id, type })}
-              unit={unit}
-              plotW={plotW || 0}
-              plotD={plotD || 0}
-              onDeleteRoom={handleDeleteRoom}
-              eraserMode={eraserMode}
-              onRemoveBlock={handleRemoveBlock}
-              customBlocks={customBlocks}
-              buildMode={buildMode}
-              onAddCustomBlock={handleAddCustomBlock}
-              onRemoveCustomBlock={handleRemoveCustomBlock}
-              activePlanIndex={activePlanIndex}
-              selectedItem={selectedItem}
-              onUpdateObject={handleUpdateObject}
-              modelWalls={model.walls || []}
-              modelDoors={model.doors || []}
-              modelWindows={model.windows || []}
-              onAddWall={handleAddWall}
-              onAddOpening={handleAddOpening}
-              onRemoveOpening={handleRemoveOpening}
-              wallThickness={wallThickness}
-              wallHeight={wallHeight}
-              wallRaise={wallRaise}
+          {view === '2d' ? (
+            <Editor2D
+              key={activePlanIndex}
+              plan={plan} spaces={spaces} unit={unit}
+              tool={tool} setTool={setTool}
+              selection={selection} setSelection={setSelection}
+              onCommit={commit} readOnly={readOnly} wallDims={wallDims}
             />
-          </Canvas>
+          ) : (
+            <>
+              <Compass rotation={rotation + Math.PI} />
+              <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
+              <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
+                <CameraController key={activePlanIndex} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
+                <View3D plan={plan} rooms={rooms} unit={unit} selection={selection} onSelect={setSelection} cutaway={cutaway} />
+              </Canvas>
+            </>
+          )}
         </div>
-        <ChatSidebar onBuildCommand={handleBuildCommand} activePlanIndex={activePlanIndex} sceneData={sceneData} />
+        <ChatSidebar onBuildCommands={handleBuildCommands} activePlanIndex={activePlanIndex} sceneData={sceneData} />
       </div>
     </div>
   );
