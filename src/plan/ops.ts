@@ -1,5 +1,5 @@
 import {
-  Corner, DOOR_DEFAULTS, Item, Opening, Plan, RoomLabel, Vec, Wall, WALL_DEFAULTS, WINDOW_DEFAULTS,
+  Background, Corner, DOOR_DEFAULTS, Item, itemSize, MIN_ITEM_SIZE, Opening, Plan, RoomLabel, Vec, Wall, WALL_DEFAULTS, WINDOW_DEFAULTS,
 } from './types';
 import { closestOnSegment, dist, lerp, pointInPolygon, projectT, segmentIntersection, sub, len } from './geometry';
 import { detectRooms, detectSpaces, Room } from './rooms';
@@ -282,6 +282,47 @@ export const updateItem = (plan: Plan, id: string, data: Partial<Item>): Plan =>
 
 export const deleteItem = (plan: Plan, id: string): Plan => ({ ...plan, items: plan.items.filter(i => i.id !== id) });
 
+// Sets an item's size, keeping its centre. Pass `null` for a dimension to go back to the default.
+export function resizeItem(plan: Plan, id: string, size: { w?: number | null; d?: number | null; h?: number | null }): Plan {
+  return {
+    ...plan,
+    items: plan.items.map(i => {
+      if (i.id !== id) return i;
+      const next = { ...i };
+      for (const k of ['w', 'd', 'h'] as const) {
+        const v = size[k];
+        if (v === null) delete next[k];
+        else if (v !== undefined && Number.isFinite(v)) next[k] = Math.max(MIN_ITEM_SIZE, v);
+      }
+      return next;
+    }),
+  };
+}
+
+// Resizes an item by dragging one of its handles to `p`. (sx, sy) is the handle in the item's
+// own frame: -1/1 for an edge, 0 for an axis it doesn't change. The opposite edge stays put.
+// `step` snaps the new size; `keepRatio` scales a corner handle proportionally.
+export function resizeItemByHandle(plan: Plan, id: string, sx: number, sy: number, p: Vec, step = 0, keepRatio = false): Plan {
+  const item = plan.items.find(i => i.id === id);
+  if (!item) return plan;
+  const { w, d } = itemSize(item);
+  const cos = Math.cos(item.rotation), sin = Math.sin(item.rotation);
+  const rel = sub(p, item);
+  const local = { x: rel.x * cos + rel.y * sin, y: -rel.x * sin + rel.y * cos };
+  const snapTo = (v: number) => Math.max(MIN_ITEM_SIZE, step > 0 ? Math.round(v / step) * step : v);
+  let nw = sx ? snapTo(sx * local.x + w / 2) : w;
+  let nd = sy ? snapTo(sy * local.y + d / 2) : d;
+  if (keepRatio && sx && sy) {
+    const k = Math.max(nw / w, nd / d);
+    nw = Math.max(MIN_ITEM_SIZE, w * k);
+    nd = Math.max(MIN_ITEM_SIZE, d * k);
+  }
+  // Shift the centre so the fixed edge stays where it was.
+  const off = { x: (sx * (nw - w)) / 2, y: (sy * (nd - d)) / 2 };
+  const center = { x: item.x + off.x * cos - off.y * sin, y: item.y + off.x * sin + off.y * cos };
+  return updateItem(plan, id, { ...center, w: nw, d: nd });
+}
+
 // ---- rooms -------------------------------------------------------------------------------
 
 export function setRoomLabel(plan: Plan, room: Room, data: Partial<Pick<RoomLabel, 'name' | 'type'>>): Plan {
@@ -357,4 +398,24 @@ export function reconcileLabels(prev: Plan, next: Plan): Plan {
     labels.push({ id: newId('room'), ...s.center, name: '', type: '' });
   }
   return { ...next, labels };
+}
+
+// ---- background image ------------------------------------------------------------------
+
+export const setBackground = (plan: Plan, background: Background | undefined): Plan => {
+  const { background: _old, ...rest } = plan;
+  return background ? { ...rest, background } : rest;
+};
+
+export const updateBackground = (plan: Plan, data: Partial<Background>): Plan =>
+  plan.background ? { ...plan, background: { ...plan.background, ...data } } : plan;
+
+// Scales the background so the distance a-b (picked on the image) becomes `length` feet.
+// Point a stays where it is, so a traced line starts where the user clicked.
+export function calibrateBackground(plan: Plan, a: Vec, b: Vec, length: number): Plan {
+  const bg = plan.background;
+  const d = dist(a, b);
+  if (!bg || d < TOL || !(length > 0)) return plan;
+  const k = length / d;
+  return updateBackground(plan, { x: a.x + (bg.x - a.x) * k, y: a.y + (bg.y - a.y) * k, width: bg.width * k, calibrated: true });
 }

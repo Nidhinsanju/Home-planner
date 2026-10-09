@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall } from '../plan/types';
+import { Item, itemSize, itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall } from '../plan/types';
+import { FurnitureSymbol } from './FurnitureSymbol';
 import { detectRooms, detectSpaces, Room, roomAt } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
 
-export type Tool = 'select' | 'wall' | 'room' | 'door' | 'window' | `item:${string}`;
+export type Tool = 'select' | 'wall' | 'room' | 'door' | 'window' | 'calibrate' | `item:${string}`;
 // 'space' is an area enclosed by walls that hasn't been made a room.
 export type Selection = { kind: 'room' | 'space' | 'wall' | 'corner' | 'opening' | 'item'; id: string } | null;
 
@@ -27,17 +28,33 @@ interface Props {
 type Drag =
   | { mode: 'pan'; startPx: Vec; startView: View; target?: Selection }
   | { mode: 'corner' | 'wall' | 'opening' | 'item'; id: string; startPx: Vec; startWorld: Vec; moved: boolean }
+  | { mode: 'resize'; id: string; sx: number; sy: number; startPx: Vec; moved: boolean }
+  | { mode: 'background'; startPx: Vec; startWorld: Vec; moved: boolean }
   | { mode: 'room'; start: Vec };
+
+// Resize handles of a selected item, in its own frame: corners and edge midpoints.
+const HANDLES: [number, number][] = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+const RESIZE_CURSORS = ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'];
+// Picks the resize cursor for a handle once the item's rotation is applied.
+const handleCursor = (sx: number, sy: number, rotation: number) => {
+  const a = Math.atan2(sy, sx) + rotation;
+  return RESIZE_CURSORS[((Math.round(a / (Math.PI / 4)) % 4) + 4) % 4];
+};
+const itemToWorld = (item: Item, p: Vec): Vec => {
+  const c = Math.cos(item.rotation), s = Math.sin(item.rotation);
+  return { x: item.x + p.x * c - p.y * s, y: item.y + p.x * s + p.y * c };
+};
 
 type View = { cx: number; cy: number; scale: number }; // scale = pixels per foot
 
 const HINTS: Record<string, string> = {
-  select: 'Click to select. Drag corners, walls, doors and furniture to move them. Drag empty space to pan, scroll to zoom.',
+  select: 'Click to select. Drag corners, walls, doors and furniture to move them; drag a selected item\'s handles to resize (Shift keeps proportions). Drag empty space to pan, scroll to zoom.',
   wall: 'Click to start a wall, click again for each corner. Type a length + Enter for exact size. Double-click or Esc to finish. Closed walls make a space: click inside it to make it a room.',
   room: 'Drag a rectangle to draw a room. It connects to walls it touches.',
   door: 'Click on a wall to place a door.',
   window: 'Click on a wall to place a window.',
   item: 'Click to place. Press Esc to stop.',
+  calibrate: 'Set scale: click both ends of something on the image whose real length you know (e.g. a wall), then type that length.',
 };
 
 export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims }: Props) {
@@ -56,6 +73,8 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
   const [hover, setHover] = useState<Selection>(null);
   const [showDims, setShowDims] = useState(true);
+  const [calib, setCalib] = useState<Vec[]>([]); // calibrate tool: the two picked points
+  const [calibLen, setCalibLen] = useState('');
   const drag = useRef<Drag | null>(null);
   const spaceDown = useRef(false);
   const altDown = useRef(false);
@@ -63,6 +82,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
   const shown = draft ?? plan;
   const shownSpaces = useMemo(() => (draft ? detectSpaces(draft) : spaces), [draft, spaces]);
   const shownRooms = shownSpaces.filter(r => r.label);
+  const bg = shown.background;
   const emptySpaces = shownSpaces.filter(r => !r.label);
   const px = (n: number) => n / view.scale;
   const step = snapStep(unit);
@@ -79,13 +99,14 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
 
   const fitView = useCallback(() => {
     const pts: Vec[] = [...plan.corners, ...plan.items];
-    const hw = plan.plot.width / 2;
-    const hd = plan.plot.depth / 2;
-    pts.push({ x: -hw, y: -hd }, { x: hw, y: hd });
+    const bgr = plan.background;
+    if (bgr) pts.push({ x: bgr.x, y: bgr.y }, { x: bgr.x + bgr.width, y: bgr.y + bgr.width * bgr.aspect });
+    if (pts.length === 0) pts.push({ x: -20, y: -15 }, { x: 20, y: 15 }); // empty plan: a 40 x 30 ft area
     const xs = pts.map(p => p.x);
     const ys = pts.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const scale = Math.min(size.w / (maxX - minX + 10), size.h / (maxY - minY + 10));
+    // Never zoom in closer than a 20 ft area, so a single item doesn't fill the screen.
+    const scale = Math.min(size.w / Math.max(20, maxX - minX + 10), size.h / Math.max(20, maxY - minY + 10));
     setView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, scale: Math.max(3, Math.min(60, scale)) });
   }, [plan, size]);
 
@@ -177,9 +198,18 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     setChain([]);
     setTyped('');
     setRoomRect(null);
+    setCalib([]);
+    setCalibLen('');
     setDraft(null);
     drag.current = null;
   }, []);
+
+  const applyCalibration = () => {
+    const L = fromDisplay(parseFloat(calibLen), unit);
+    if (calib.length !== 2 || !(L > 0)) return;
+    onCommit(ops.calibrateBackground(plan, calib[0], calib[1], L));
+    setTool('select');
+  };
 
   useEffect(() => finishTool(), [tool, finishTool]);
 
@@ -287,6 +317,11 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
       drag.current = { mode: 'room', start: snap(world).point };
       return;
     }
+    if (!readOnly && tool === 'calibrate') {
+      // Points are picked on the image itself, so no snapping to the plan.
+      setCalib(c => (c.length >= 2 ? [world] : [...c, world]));
+      return;
+    }
     if (!readOnly && (tool === 'door' || tool === 'window')) {
       const hit = wallUnder(world);
       if (hit) onCommit(ops.addOpening(plan, hit.wall.id, hit.point, tool));
@@ -301,10 +336,22 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
       return;
     }
 
+    const handle = (e.target as Element).closest('[data-handle]');
+    if (handle && !readOnly && selection?.kind === 'item') {
+      const [sx, sy] = handle.getAttribute('data-handle')!.split(',').map(Number);
+      drag.current = { mode: 'resize', id: selection.id, sx, sy, startPx, moved: false };
+      return;
+    }
+
     const target = targetOf(e);
     if (target && target.kind !== 'room' && target.kind !== 'space' && !readOnly) {
       setSelection(target.kind === 'corner' ? selection : target);
       drag.current = { mode: target.kind as 'corner', id: target.id, startPx, startWorld: world, moved: false };
+      return;
+    }
+    // An unlocked background image is moved by dragging empty space (Space + drag still pans).
+    if (!readOnly && plan.background && !plan.background.locked && (!target || target.kind === 'space')) {
+      drag.current = { mode: 'background', startPx, startWorld: world, moved: false };
       return;
     }
     drag.current = { mode: 'pan', startPx, startView: view, target };
@@ -333,6 +380,10 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     }
     if (!d.moved && Math.hypot(e.clientX - d.startPx.x, e.clientY - d.startPx.y) < 4) return;
     d.moved = true;
+    if (d.mode === 'resize') {
+      setDraft(ops.resizeItemByHandle(plan, d.id, d.sx, d.sy, world, altDown.current ? 0 : step / 2, e.shiftKey));
+      return;
+    }
     const delta = sub(world, d.startWorld);
 
     if (d.mode === 'corner') {
@@ -351,6 +402,8 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
       if (!item) return;
       const p = add(item, delta);
       setDraft(ops.updateItem(plan, d.id, { x: Math.round(p.x / step) * step, y: Math.round(p.y / step) * step }));
+    } else if (d.mode === 'background' && plan.background) {
+      setDraft(ops.updateBackground(plan, { x: plan.background.x + delta.x, y: plan.background.y + delta.y }));
     }
   };
 
@@ -382,6 +435,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     }
     if (!d.moved) {
       if (d.mode === 'corner') setSelection({ kind: 'corner', id: d.id });
+      if (d.mode === 'background') setSelection(null);
       return;
     }
     const final = draftRef.current;
@@ -441,7 +495,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={() => setCursor(null)}
-        style={{ cursor: tool === 'select' ? (drag.current?.mode === 'pan' ? 'grabbing' : 'default') : 'crosshair', display: 'block' }}
+        style={{ cursor: tool === 'select' ? (drag.current?.mode === 'pan' ? 'grabbing' : bg && !bg.locked && !readOnly ? 'move' : 'default') : 'crosshair', display: 'block' }}
       >
         <defs>
           <pattern id="grid-minor" width={gridStep} height={gridStep} patternUnits="userSpaceOnUse">
@@ -455,9 +509,13 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         <rect x={view.cx - size.w / view.scale} y={view.cy - size.h / view.scale} width={(size.w / view.scale) * 2} height={(size.h / view.scale) * 2} fill="#fafafa" />
         {view.scale > 4 && <rect x={-500} y={-500} width={1000} height={1000} fill="url(#grid-major)" style={{ pointerEvents: 'none' }} />}
 
-        {/* Plot boundary */}
-        <rect x={-shown.plot.width / 2} y={-shown.plot.depth / 2} width={shown.plot.width} height={shown.plot.depth}
-          fill="none" stroke="#9aa3ad" strokeDasharray={`${px(6)} ${px(4)}`} strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+        {/* Uploaded floor plan to trace over */}
+        {bg && (
+          <g style={{ pointerEvents: 'none' }}>
+            <image href={bg.src} x={bg.x} y={bg.y} width={bg.width} height={bg.width * bg.aspect} opacity={bg.opacity} preserveAspectRatio="none" />
+            {!bg.locked && <rect x={bg.x} y={bg.y} width={bg.width} height={bg.width * bg.aspect} fill="none" stroke="#3b82f6" strokeWidth={px(1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />}
+          </g>
+        )}
 
         {/* Enclosed spaces that aren't rooms yet: clickable, highlighted on hover/selection */}
         {emptySpaces.map(sp => {
@@ -473,7 +531,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         {/* Rooms */}
         {shownRooms.map(r => (
           <polygon key={r.key} data-kind="room" data-id={r.id} points={r.polygon.map(p => `${p.x},${p.y}`).join(' ')}
-            fill={roomType(r.label?.type)?.color ?? UNNAMED_ROOM_COLOR}
+            fill={roomType(r.label?.type)?.color ?? UNNAMED_ROOM_COLOR} fillOpacity={bg ? 0.45 : 1}
             stroke={selRoom?.key === r.key ? '#3b82f6' : 'none'} strokeWidth={px(3)} />
         ))}
 
@@ -481,12 +539,13 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         {shown.items.map(item => {
           const spec = itemSpec(item.type);
           if (!spec) return null;
-          const sel = selection?.kind === 'item' && selection.id === item.id;
+          const { w, d } = itemSize(item);
+          const hov = hover?.kind === 'item' && hover.id === item.id;
           return (
             <g key={item.id} data-kind="item" data-id={item.id} transform={`translate(${item.x} ${item.y}) rotate(${(item.rotation * 180) / Math.PI})`} style={{ cursor: readOnly ? 'default' : 'move' }}>
-              <rect x={-spec.w / 2} y={-spec.d / 2} width={spec.w} height={spec.d} rx={Math.min(spec.w, spec.d) * 0.08}
-                fill={spec.color} fillOpacity={0.85} stroke={sel ? '#3b82f6' : '#55595f'} strokeWidth={px(sel ? 2.5 : 1)} />
-              <text fontSize={Math.min(fs * 0.85, spec.w / 4)} textAnchor="middle" dominantBaseline="middle" fill="#1f2328" style={{ pointerEvents: 'none', userSelect: 'none' }}>{spec.name}</text>
+              <title>{spec.name}</title>
+              <FurnitureSymbol type={item.type} w={w} d={d} color={spec.color} sw={px(1)} />
+              {hov && <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="#3b82f6" fillOpacity={0.08} stroke="#3b82f6" strokeOpacity={0.5} strokeWidth={px(1)} />}
             </g>
           );
         })}
@@ -563,6 +622,39 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           );
         })}
 
+        {/* Selected item: outline, size labels and resize handles */}
+        {selection?.kind === 'item' && tool === 'select' && (() => {
+          const item = shown.items.find(i => i.id === selection.id);
+          if (!item) return null;
+          const { w, d } = itemSize(item);
+          const hs = px(9);
+          const corner = (sx: number, sy: number) => itemToWorld(item, { x: (sx * w) / 2, y: (sy * d) / 2 });
+          return (
+            <g>
+              <g transform={`translate(${item.x} ${item.y}) rotate(${(item.rotation * 180) / Math.PI})`}>
+                <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="none" stroke="#3b82f6" strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+                {!readOnly && HANDLES.map(([sx, sy]) => (
+                  <rect key={`${sx},${sy}`} data-handle={`${sx},${sy}`} x={(sx * w) / 2 - hs / 2} y={(sy * d) / 2 - hs / 2} width={hs} height={hs} rx={px(2)}
+                    fill="#fff" stroke="#3b82f6" strokeWidth={px(1.5)} style={{ cursor: handleCursor(sx, sy, item.rotation) }} />
+                ))}
+              </g>
+              {lengthLabel(corner(-1, -1), corner(1, -1), -px(14), 'item-w', '#1d4ed8')}
+              {lengthLabel(corner(1, -1), corner(1, 1), -px(14), 'item-d', '#1d4ed8')}
+            </g>
+          );
+        })()}
+
+        {/* Calibrate tool: the measured line */}
+        {tool === 'calibrate' && calib.length > 0 && (() => {
+          const end = calib[1] ?? cursor ?? calib[0];
+          return (
+            <g style={{ pointerEvents: 'none' }}>
+              <line x1={calib[0].x} y1={calib[0].y} x2={end.x} y2={end.y} stroke="#ef4444" strokeWidth={px(2)} />
+              {[calib[0], end].map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={px(5)} fill="#fff" stroke="#ef4444" strokeWidth={px(2)} />)}
+            </g>
+          );
+        })()}
+
         {/* Snap guides */}
         {guides.x !== undefined && <line x1={guides.x} y1={-500} x2={guides.x} y2={500} stroke="#38bdf8" strokeWidth={px(1)} style={{ pointerEvents: 'none' }} />}
         {guides.y !== undefined && <line x1={-500} y1={guides.y} x2={500} y2={guides.y} stroke="#38bdf8" strokeWidth={px(1)} style={{ pointerEvents: 'none' }} />}
@@ -609,10 +701,21 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
 
         {/* Furniture placement preview */}
         {hoverItem && cursor && (
-          <rect x={snap(cursor).point.x - hoverItem.w / 2} y={snap(cursor).point.y - hoverItem.d / 2} width={hoverItem.w} height={hoverItem.d}
-            fill={hoverItem.color} fillOpacity={0.5} stroke="#3b82f6" strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+          <g transform={`translate(${snap(cursor).point.x} ${snap(cursor).point.y})`} opacity={0.6} style={{ pointerEvents: 'none' }}>
+            <FurnitureSymbol type={hoverItem.id} w={hoverItem.w} d={hoverItem.d} color={hoverItem.color} sw={px(1)} />
+          </g>
         )}
       </svg>
+
+      {tool === 'calibrate' && calib.length === 2 && (
+        <form className="editor2d-calibrate" onSubmit={e => { e.preventDefault(); applyCalibration(); }}>
+          <span>Real length of this line</span>
+          <input autoFocus type="number" min={0} step="any" value={calibLen} onChange={e => setCalibLen(e.target.value)} placeholder="e.g. 12" />
+          <span>{unit === 'mt' ? 'm' : 'ft'}</span>
+          <button type="submit" className="primary" disabled={!(parseFloat(calibLen) > 0)}>Set scale</button>
+          <button type="button" onClick={() => { setCalib([]); setCalibLen(''); }}>Redo</button>
+        </form>
+      )}
 
       <div className="editor2d-zoom">
         <button onClick={() => setView(v => ({ ...v, scale: Math.min(200, v.scale * 1.25) }))} title="Zoom in">+</button>

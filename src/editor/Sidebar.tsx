@@ -3,14 +3,16 @@
 import React, { useEffect, useState } from 'react';
 import {
   AppWindow, Armchair, ChevronLeft, DoorOpen, FlipHorizontal2, Hammer, LayoutDashboard, MousePointer2, PenLine,
-  RotateCw, Scissors, Square, Trash2,
+  Image as ImageIcon, Lock, Move, RotateCw, Ruler, Scissors, Square, Trash2, Upload,
 } from 'lucide-react';
-import { ITEM_CATALOG, itemSpec, Plan, ROOM_TYPES, roomType } from '../plan/types';
+import { ITEM_CATALOG, itemSize, itemSpec, MIN_ITEM_SIZE, Plan, ROOM_TYPES, roomType } from '../plan/types';
 import type { Room } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { lerp } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, round2, toDisplay } from '../units';
 import type { Selection, Tool } from './Editor2D';
+import { FurnitureSymbol } from './FurnitureSymbol';
+import { loadBackgroundImage } from './backgroundImage';
 
 interface Props {
   plan: Plan;
@@ -63,6 +65,16 @@ function TextField({ label, value, onChange }: { label: string; value: string; o
   );
 }
 
+// The item's plan symbol, scaled to fit a small square.
+function ItemThumb({ type, w, d, color }: { type: string; w: number; d: number; color: string }) {
+  const s = Math.max(w, d) * 1.15;
+  return (
+    <svg className="item-thumb" viewBox={`${-s / 2} ${-s / 2} ${s} ${s}`} aria-hidden>
+      <FurnitureSymbol type={type} w={w} d={d} color={color} sw={s / 40} />
+    </svg>
+  );
+}
+
 const ToolButton = ({ active, onClick, icon, label, shortcut, disabled }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; shortcut?: string; disabled?: boolean }) => (
   <button className={`tool-btn ${active ? 'active' : ''}`} onClick={onClick} disabled={disabled} title={shortcut ? `${label} (${shortcut})` : label}>
     {icon}
@@ -91,7 +103,7 @@ export function Sidebar(props: Props) {
         {selection ? (
           <Inspector {...props} />
         ) : tab === 'project' ? (
-          <ProjectPanel plan={plan} rooms={rooms} unit={unit} onCommit={onCommit} readOnly={readOnly} activePlanIndex={activePlanIndex} onSwitchPlan={onSwitchPlan} setSelection={setSelection} />
+          <ProjectPanel rooms={rooms} unit={unit} readOnly={readOnly} activePlanIndex={activePlanIndex} onSwitchPlan={onSwitchPlan} setSelection={setSelection} />
         ) : tab === 'build' ? (
           <>
             <div className="sidebar-section">
@@ -114,6 +126,7 @@ export function Sidebar(props: Props) {
                   </div>
                 </div>
                 <QuickRoom plan={plan} unit={unit} wallDims={wallDims} onCommit={onCommit} />
+                <BackgroundSection plan={plan} unit={unit} tool={tool} setTool={setTool} onCommit={onCommit} />
               </>
             )}
           </>
@@ -127,7 +140,7 @@ export function Sidebar(props: Props) {
                 <div className="tool-grid">
                   {ITEM_CATALOG.filter(i => i.category === cat).map(i => (
                     <button key={i.id} className={`tool-btn ${tool === `item:${i.id}` ? 'active' : ''}`} disabled={readOnly} onClick={() => setTool(`item:${i.id}`)}>
-                      <span className="swatch" style={{ background: i.color }} />
+                      <ItemThumb type={i.id} w={i.w} d={i.d} color={i.color} />
                       <span>{i.name}</span>
                     </button>
                   ))}
@@ -142,8 +155,68 @@ export function Sidebar(props: Props) {
   );
 }
 
-function ProjectPanel({ plan, rooms, unit, onCommit, readOnly, activePlanIndex, onSwitchPlan, setSelection }: {
-  plan: Plan; rooms: Room[]; unit: DisplayUnit; onCommit: (p: Plan) => void; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void;
+// Upload a floor-plan image to trace over, set its scale, fade, move or remove it.
+function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan; unit: DisplayUnit; tool: Tool; setTool: (t: Tool) => void; onCommit: (p: Plan) => void }) {
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const bg = plan.background;
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setError('');
+    setBusy(true);
+    try {
+      const { src, aspect } = await loadBackgroundImage(file);
+      const width = 50; // feet, until the user sets the scale
+      onCommit(ops.setBackground(plan, { src, aspect, width, x: -width / 2, y: (-width * aspect) / 2, opacity: 0.5, locked: true }));
+      setTool('calibrate');
+    } catch (e: any) {
+      setError(e?.message || 'Upload failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sidebar-section">
+      <h3><ImageIcon size={14} style={{ verticalAlign: -2 }} /> Background image</h3>
+      {!bg ? (
+        <>
+          <label className={`secondary-btn upload-btn ${busy ? 'disabled' : ''}`}>
+            <Upload size={14} /> {busy ? 'Loading…' : 'Upload floor plan'}
+            <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={busy}
+              onChange={e => { upload(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
+          <p className="muted">Trace over a drawing or scan (PNG or JPG). You'll set its scale by measuring one known length.</p>
+        </>
+      ) : (
+        <>
+          <div className="prop-group">
+            <label>Opacity ({Math.round(bg.opacity * 100)}%)</label>
+            <input type="range" min={10} max={100} step={5} value={Math.round(bg.opacity * 100)}
+              onChange={e => onCommit(ops.updateBackground(plan, { opacity: Number(e.target.value) / 100 }))} />
+          </div>
+          <p className="muted">Image width {formatLength(bg.width, unit)}</p>
+          <div className="grid-2">
+            <button className={`secondary-btn ${tool === 'calibrate' ? 'active' : ''}`} onClick={() => setTool(tool === 'calibrate' ? 'select' : 'calibrate')}>
+              <Ruler size={14} /> Set scale
+            </button>
+            <button className={`secondary-btn ${!bg.locked ? 'active' : ''}`} onClick={() => { onCommit(ops.updateBackground(plan, { locked: !bg.locked })); setTool('select'); }}
+              title={bg.locked ? 'Unlock, then drag empty space on the plan to move the image' : 'Lock the image in place'}>
+              {bg.locked ? <><Move size={14} /> Move</> : <><Lock size={14} /> Lock</>}
+            </button>
+          </div>
+          {!bg.locked && <p className="muted">Drag on the plan to move the image. Hold Space to pan instead.</p>}
+          <DangerButton onClick={() => { onCommit(ops.setBackground(plan, undefined)); if (tool === 'calibrate') setTool('select'); }}>Remove image</DangerButton>
+        </>
+      )}
+      {error && <p className="notice">{error}</p>}
+    </div>
+  );
+}
+
+function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, setSelection }: {
+  rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void;
 }) {
   const total = rooms.reduce((s, r) => s + r.area, 0);
   return (
@@ -158,15 +231,8 @@ function ProjectPanel({ plan, rooms, unit, onCommit, readOnly, activePlanIndex, 
         {readOnly && <p className="notice">This example is read-only. Switch to P1 or P2 to edit.</p>}
       </div>
       <div className="sidebar-section">
-        <h3>Plot</h3>
-        <div className="grid-2">
-          <LenField label="Width" unit={unit} value={plan.plot.width} min={1} onChange={width => !readOnly && onCommit({ ...plan, plot: { ...plan.plot, width } })} />
-          <LenField label="Depth" unit={unit} value={plan.plot.depth} min={1} onChange={depth => !readOnly && onCommit({ ...plan, plot: { ...plan.plot, depth } })} />
-        </div>
-        <p className="muted">Plot area {formatArea(plan.plot.width * plan.plot.depth, unit)} · Built {formatArea(total, unit)}</p>
-      </div>
-      <div className="sidebar-section">
         <h3>Rooms ({rooms.length})</h3>
+        {rooms.length > 0 && <p className="muted">Built area {formatArea(total, unit)}</p>}
         {rooms.length === 0 && <p className="muted">No rooms yet. Use Draw Room or Quick room, or click inside closed walls and choose Make this a room.</p>}
         {rooms.map(r => (
           <button key={r.key} className="room-row" onClick={() => setSelection({ kind: 'room', id: r.id })}>
@@ -364,13 +430,25 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
   if (!item) return <>{back}<p className="muted">Item not found.</p></>;
   const spec = itemSpec(item.type);
   const deg = Math.round(((item.rotation * 180) / Math.PI) % 360);
+  const size = itemSize(item);
+  const resized = item.w != null || item.d != null || item.h != null;
   return (
     <div className="sidebar-section">
       {back}
       <h3>{spec?.name ?? item.type}</h3>
       {ro}
       <fieldset disabled={readOnly} className="plain">
-        {spec && <p className="muted">{formatLength(spec.w, unit)} × {formatLength(spec.d, unit)} × {formatLength(spec.h, unit)}</p>}
+        <div className="grid-3">
+          <LenField label="Width" unit={unit} value={size.w} min={MIN_ITEM_SIZE} onChange={w => onCommit(ops.resizeItem(plan, item.id, { w }))} />
+          <LenField label="Depth" unit={unit} value={size.d} min={MIN_ITEM_SIZE} onChange={d => onCommit(ops.resizeItem(plan, item.id, { d }))} />
+          <LenField label="Height" unit={unit} value={size.h} min={MIN_ITEM_SIZE} onChange={h => onCommit(ops.resizeItem(plan, item.id, { h }))} />
+        </div>
+        {resized && spec && (
+          <button className="secondary-btn" onClick={() => onCommit(ops.resizeItem(plan, item.id, { w: null, d: null, h: null }))}>
+            Reset to default size ({formatLength(spec.w, unit)} × {formatLength(spec.d, unit)})
+          </button>
+        )}
+        <p className="muted">Drag the handles on the plan to resize. Hold Shift on a corner to keep proportions.</p>
         <div className="grid-2">
           <LenField label="X" unit={unit} value={item.x} min={-1e6} onChange={x => onCommit(ops.updateItem(plan, item.id, { x }))} />
           <LenField label="Y" unit={unit} value={item.y} min={-1e6} onChange={y => onCommit(ops.updateItem(plan, item.id, { y }))} />

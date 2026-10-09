@@ -14,14 +14,16 @@ const ft = (v: unknown, metricBelow: number, fallback: number) => {
 
 // Converts a saved build (new or old format) into a Plan.
 export function planFromBuild(build: any): Plan {
-  if (build?.plan?.version === 2) return { ...emptyPlan(), ...build.plan };
+  if (build?.plan?.version === 2) {
+    const { plot: _oldPlot, ...plan } = build.plan; // plans used to store a rectangular plot
+    return { ...emptyPlan(), ...plan };
+  }
   return migrateLegacy(build);
 }
 
 export function migrateLegacy(build: any): Plan {
   let plan = emptyPlan();
   if (!build) return plan;
-  if (build.plot?.width && build.plot?.depth) plan.plot = { width: build.plot.width, depth: build.plot.depth };
 
   for (const r of build.rooms || []) {
     if (!(r.width > 0 && r.depth > 0)) continue;
@@ -85,5 +87,5 @@ const EXAMPLE_ROOMS = [
 ];
 
 export function examplePlan(): Plan {
-  return migrateLegacy({ rooms: EXAMPLE_ROOMS, plot: { width: 46, depth: 36 } });
+  return migrateLegacy({ rooms: EXAMPLE_ROOMS });
 }

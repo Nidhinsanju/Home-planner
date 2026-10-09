@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Vastu 3D Visualizer',
-  description: 'A 3D Vastu compliant home planning application',
+  title: 'Home planner',
+  description: 'A compliant home planning application',
   icons: { icon: '/favicon.svg' },
 };
 
@@ -15,6 +15,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>{children}</body>
-    </html>
+    </html> 
   );
 }

@@ -1,9 +1,12 @@
 import React from 'react';
 import { getChatHistory, clearChatHistory } from './actions/chat';
+import type { Background } from './plan/types';
+import { PlanImageCard } from './editor/PlanImageCard';
+import { shrinkForVision } from './editor/backgroundImage';
 
 export const TopBar = ({ view, setView, onUndo, canUndo, onRedo, canRedo, unit, setUnit, onSave, dirty, onLogout, username, cutaway, setCutaway }: any) => (
   <div className="top-bar">
-    <div className="title">Vastu 3D Home Planner {username && <span style={{ color: '#8f969f', fontWeight: 'normal' }}>- Welcome, {username}</span>}</div>
+    <div className="title">Home Planner {username && <span style={{ color: '#8f969f', fontWeight: 'normal' }}>- Welcome, {username}</span>}</div>
     <div className="actions">
       {onSave && <button className="ui-btn dark" onClick={onSave} title="Save (Ctrl+S)">💾 Save{dirty ? ' •' : ''}</button>}
       <button className="ui-btn" onClick={onUndo} disabled={!canUndo} style={{ opacity: canUndo ? 1 : 0.5 }} title="Undo (Ctrl+Z)">↶ Undo</button>
@@ -39,7 +42,14 @@ export const Compass: React.FC<{ rotation: number }> = ({ rotation }) => {
   );
 };
 
-export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData }: { onBuildCommands?: (cmds: any[]) => Promise<string[]>, activePlanIndex: number, sceneData?: any }) => {
+export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, background, onImageRead, onImageChoice }: {
+  onBuildCommands?: (cmds: any[]) => Promise<{ changed: boolean; notes: string[] }>;
+  activePlanIndex: number;
+  sceneData?: any;
+  background?: Background;
+  onImageRead: React.ComponentProps<typeof PlanImageCard>['onImageRead'];
+  onImageChoice: React.ComponentProps<typeof PlanImageCard>['onImageChoice'];
+}) => {
   const [messages, setMessages] = React.useState<{ text: string; isAi: boolean }[]>([
     { text: "Hello! I am your AI assistant. How can I help you design your home today?", isAi: true }
   ]);
@@ -104,6 +114,22 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData }: { o
     setMessages(prev => [...prev, { text: "Stopped. No changes were made.", isAi: true }]);
   };
 
+  // A small copy of the uploaded floor plan, sent with each message so the AI can look at it.
+  // Kept small (768px) to leave room in the model's context; made once per image.
+  const chatImageRef = React.useRef<{ src: string; image: string } | null>(null);
+  const chatImage = async () => {
+    const src = background?.src;
+    if (!src) return undefined;
+    if (chatImageRef.current?.src !== src) {
+      try {
+        chatImageRef.current = { src, image: (await shrinkForVision(src, 768)).image };
+      } catch {
+        return undefined; // chat still works without the picture
+      }
+    }
+    return chatImageRef.current.image;
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
     const userMsg = input.trim();
@@ -121,10 +147,11 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData }: { o
       }
       const sentFromPlan = activePlanIndex;
       const token = localStorage.getItem('token') || '';
+      const image = await chatImage();
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: userMsg, planId, sceneData }),
+        body: JSON.stringify({ prompt: userMsg, planId, sceneData, image }),
         signal: controller.signal,
       });
       const res = await response.json();
@@ -135,11 +162,10 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData }: { o
       if (res.error) {
         setMessages(prev => [...prev, { text: "Error: " + res.error, isAi: true }]);
       } else if (res.buildCommands?.length) {
-        setMessages(prev => [...prev, { text: res.reply || "I've processed your command and updated the 3D scene!", isAi: true }]);
-        const notes = (await onBuildCommandsRef.current?.(res.buildCommands)) || [];
-        if (notes.length > 0) {
-          setMessages(prev => [...prev, ...notes.map(text => ({ text, isAi: true }))]);
-        }
+        // Apply first, so the reply can say whether anything actually changed.
+        const { changed, notes } = (await onBuildCommandsRef.current?.(res.buildCommands)) || { changed: false, notes: [] };
+        const summary = res.reply || (changed ? "Done, I've updated the plan." : "I couldn't make that change.");
+        setMessages(prev => [...prev, ...[summary, ...notes].map(text => ({ text, isAi: true }))]);
       } else if (res.reply) {
         setMessages(prev => [...prev, { text: res.reply, isAi: true }]);
       }
@@ -193,6 +219,11 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData }: { o
             </div>
           </div>
         ))}
+        {activePlanIndex !== 2 && (
+          <PlanImageCard key={activePlanIndex} background={background} planId={activePlanIndex === 0 ? 'p1' : 'p2'}
+            onImageRead={onImageRead} onImageChoice={onImageChoice}
+            onMessage={text => setMessages(prev => [...prev, { text, isAi: true }])} />
+        )}
         {isLoading && (
           <div className="chat-message ai">
             <div className="chat-bubble chat-thinking">Thinking<span>.</span><span>.</span><span>.</span></div>

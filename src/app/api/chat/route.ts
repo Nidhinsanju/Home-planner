@@ -17,6 +17,7 @@ export async function POST(request: Request) {
   const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
   if (!prompt) return Response.json({ error: 'Empty message' }, { status: 400 });
 
-  const result = await runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal);
+  const image = typeof body.image === 'string' ? body.image : undefined;
+  const result = await runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal, image);
   return Response.json(result);
 }

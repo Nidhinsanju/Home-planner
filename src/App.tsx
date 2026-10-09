@@ -10,9 +10,10 @@ import { DPad } from './DPad';
 import { Editor2D, Selection, Tool } from './editor/Editor2D';
 import { View3D } from './editor/View3D';
 import { Sidebar } from './editor/Sidebar';
-import { Plan, WALL_DEFAULTS } from './plan/types';
+import { Background, Plan, WALL_DEFAULTS } from './plan/types';
 import { detectRooms, detectSpaces, roomAt } from './plan/rooms';
-import { reconcileLabels } from './plan/ops';
+import * as ops from './plan/ops';
+import { imageRoomCommands } from './plan/imageRooms';
 import { examplePlan, planFromBuild } from './plan/migrate';
 import { applyCommands, BuildCommand, describePlan } from './plan/commands';
 import { DisplayUnit } from './units';
@@ -28,7 +29,7 @@ const CameraController = ({ plan, panState, onRotationChange, isInteracting }: a
     if (!framed.current) {
       framed.current = true;
       const pts: { x: number; y: number }[] = [...plan.corners, ...plan.items];
-      if (pts.length === 0) pts.push({ x: -plan.plot.width / 2, y: -plan.plot.depth / 2 }, { x: plan.plot.width / 2, y: plan.plot.depth / 2 });
+      if (pts.length === 0) pts.push({ x: -20, y: -15 }, { x: 20, y: 15 });
       const xs = pts.map(p => p.x);
       const ys = pts.map(p => p.y);
       const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
@@ -87,7 +88,7 @@ function App({ initialUser }: any) {
   // Every edit goes through here: one undo step, labels re-attached to their rooms.
   const commit = (next: Plan) => {
     if (readOnly || next === plan) return;
-    const reconciled = reconcileLabels(plan, next);
+    const reconciled = ops.reconcileLabels(plan, next);
     const history = [...current.history.slice(0, current.index + 1), reconciled];
     setCurrent({ history, index: history.length - 1 });
     // A room's id changes when it gets its first label; keep it selected.
@@ -155,19 +156,40 @@ function App({ initialUser }: any) {
 
   const sceneData = useMemo(() => describePlan(plan), [plan]);
 
-  // Applies AI commands as one undo step and saves the result. Returns notes for the chat.
-  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<string[]> => {
-    if (readOnly) return ['The example plan is read-only.'];
+  // Applies AI commands as one undo step and saves the result. Returns whether the plan
+  // changed, and notes for the chat.
+  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<{ changed: boolean; notes: string[] }> => {
+    if (readOnly) return { changed: false, notes: ['The example plan is read-only.'] };
     const { plan: next, errors } = applyCommands(plan, cmds);
-    if (next !== plan) {
-      const reconciled = commit(next);
-      setSelection(null);
-      if (reconciled) {
-        const res = await persist(reconciled);
-        if (res.error) errors.push(`The plan was updated but could not be saved: ${res.error}`);
-      }
-    }
-    return errors;
+    const changed = next !== plan;
+    if (changed) errors.push(...(await commitAndSave(next)));
+    return { changed, notes: errors };
+  };
+
+  // Commits an AI-made change as one undo step and saves it. Returns notes for the chat.
+  const commitAndSave = async (next: Plan): Promise<string[]> => {
+    const reconciled = commit(next);
+    setSelection(null);
+    if (!reconciled) return [];
+    const res = await persist(reconciled);
+    return res.error ? [`The plan was updated but could not be saved: ${res.error}`] : [];
+  };
+
+  // The vision model finished reading the background image. Ignored if the image was
+  // replaced or removed meanwhile.
+  const handleImageRead = async (src: string, analysis: NonNullable<Background['analysis']>) => {
+    if (readOnly || plan.background?.src !== src) return [];
+    return commitAndSave(ops.updateBackground(plan, { analysis, use: undefined }));
+  };
+
+  // The user chose what to do with the image: build its rooms, or keep it as reference.
+  const handleImageChoice = async (use: 'build' | 'context'): Promise<{ built: number; notes: string[] }> => {
+    const bg = plan.background;
+    if (readOnly || !bg) return { built: 0, notes: [] };
+    if (use === 'context') return { built: 0, notes: await commitAndSave(ops.updateBackground(plan, { use })) };
+    const cmds = imageRoomCommands(bg);
+    const { plan: next, errors } = applyCommands(plan, cmds);
+    return { built: cmds.length - errors.length, notes: [...errors, ...(await commitAndSave(ops.updateBackground(next, { use })))] };
   };
 
   return (
@@ -204,7 +226,8 @@ function App({ initialUser }: any) {
             />
           ) : (
             <>
-              <Compass rotation={rotation + Math.PI} />
+              {/* Compass turns with the camera; north is -z in the 3D world (-y on the plan). */}
+              <Compass rotation={rotation} />
               <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
               <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
                 <CameraController key={activePlanIndex} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
@@ -213,7 +236,8 @@ function App({ initialUser }: any) {
             </>
           )}
         </div>
-        <ChatSidebar onBuildCommands={handleBuildCommands} activePlanIndex={activePlanIndex} sceneData={sceneData} />
+        <ChatSidebar onBuildCommands={handleBuildCommands} activePlanIndex={activePlanIndex} sceneData={sceneData}
+          background={readOnly ? undefined : plan.background} onImageRead={handleImageRead} onImageChoice={handleImageChoice} />
       </div>
     </div>
   );

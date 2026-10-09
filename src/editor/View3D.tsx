@@ -2,13 +2,14 @@
 
 import React, { useMemo } from 'react';
 import * as THREE from 'three';
-import { Grid, Outlines } from '@react-three/drei';
+import { Grid } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
-import { itemSpec, Opening, Plan, roomType, UNNAMED_ROOM_COLOR, Wall } from '../plan/types';
+import { itemSize, itemSpec, Opening, Plan, roomType, UNNAMED_ROOM_COLOR, Wall } from '../plan/types';
 import { Room, roomDimensions } from '../plan/rooms';
 import { wallEnds } from '../plan/ops';
 import { formatArea, formatDimensions, DisplayUnit } from '../units';
 import type { Selection } from './Editor2D';
+import { FurnitureModel, SelectionFrame } from './FurnitureModel';
 
 // Renders a Plan in 3D. Plan (x, y) maps to world (x, z); heights are world y. Feet throughout.
 
@@ -56,10 +57,12 @@ export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Prop
       {plan.items.map(item => {
         const spec = itemSpec(item.type);
         if (!spec) return null;
+        const { w, d, h } = itemSize(item);
         return (
           <group key={item.id} position={[item.x, 0, item.y]} rotation={[0, -item.rotation, 0]}
             onClick={e => { if (!isClick(e)) return; e.stopPropagation(); onSelect({ kind: 'item', id: item.id }); }}>
-            <ItemModel type={item.type} w={spec.w} d={spec.d} h={spec.h} color={spec.color} selected={isSel('item', item.id)} />
+            <FurnitureModel type={item.type} w={w} d={d} h={h} color={spec.color} />
+            {isSel('item', item.id) && <SelectionFrame w={w} d={d} color={SELECT_COLOR} />}
           </group>
         );
       })}
@@ -170,33 +173,6 @@ function WallMesh({ plan, wall, openings, cutaway, selected, selectedOpening, on
         );
       })}
     </group>
-  );
-}
-
-function ItemModel({ type, w, d, h, color, selected }: { type: string; w: number; d: number; h: number; color: string; selected: boolean }) {
-  const outline = selected ? <Outlines thickness={0.08} color={SELECT_COLOR} /> : null;
-  if (type === 'tree' || type === 'plant') {
-    const trunkH = type === 'tree' ? h * 0.4 : h * 0.35;
-    return (
-      <group>
-        <mesh position={[0, trunkH / 2, 0]} castShadow>
-          <cylinderGeometry args={type === 'tree' ? [0.35, 0.45, trunkH, 10] : [w * 0.3, w * 0.25, trunkH, 12]} />
-          <meshStandardMaterial color={type === 'tree' ? '#6b4a32' : '#b5703f'} />
-        </mesh>
-        <mesh position={[0, trunkH + (h - trunkH) / 2, 0]} castShadow>
-          <sphereGeometry args={[Math.min(w / 2, (h - trunkH) / 2), 16, 12]} />
-          <meshStandardMaterial color={color} roughness={0.9} />
-          {outline}
-        </mesh>
-      </group>
-    );
-  }
-  return (
-    <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
-      <boxGeometry args={[w, h, d]} />
-      <meshStandardMaterial color={color} roughness={0.8} />
-      {outline}
-    </mesh>
   );
 }
 

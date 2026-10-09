@@ -10,7 +10,6 @@ export type BuildData = {
   doors?: any[];
   windows?: any[];
   assets?: any[];
-  plot?: { width: number; depth: number };
 };
 
 export type UserType = {
@@ -60,7 +59,6 @@ const buildDataSchema = new mongoose.Schema({
   doors: { type: Array, default: [] },
   windows: { type: Array, default: [] },
   assets: { type: Array, default: [] },
-  plot: { width: Number, depth: Number },
   plan: { type: mongoose.Schema.Types.Mixed },
 }, { _id: false });
 
