@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { getUserByToken, isPlanId } from './session';
 import type { ImageRoom } from '../plan/types';
+import { planImagePrompt } from './aiPrompt';
 
 // Reads an uploaded floor-plan image with a local vision model (Ollama, OpenAI-compatible
 // API) and returns a short description plus the rooms it can see, as boxes in fractions of
@@ -13,17 +14,6 @@ export type PlanImageResult =
 
 const VISION_MODEL = () => process.env.AI_VISION_MODEL || 'qwen2.5vl:3b';
 
-const prompt = (w: number, h: number) => `
-This image is an architectural floor plan (${w} x ${h} pixels). Identify every room or space drawn on it.
-
-Return ONLY JSON, no other text, in exactly this shape:
-{"summary": "one or two sentences describing the layout", "rooms": [{"name": "Living Room", "type": "living", "box": [x1, y1, x2, y2]}]}
-
-- "box" is the room's rectangle in PIXELS: x1,y1 = top-left corner, x2,y2 = bottom-right corner, inside the walls.
-- "name" is the label written on the plan if there is one (e.g. "Master Bedroom"), otherwise a sensible name.
-- "type" is one of: living, bed, kitchen, dining, toilet, pooja, study, utility, store, staircase, parking, balcony, hallway.
-- If sizes are written on the plan (e.g. 12'x10'), mention them in the summary.
-`;
 
 // The first {...} block in the reply, parsed.
 function extractJson(text: string): any {
@@ -70,7 +60,7 @@ export async function readPlanImage(token: string, planId: string, image: string
           role: 'user',
           content: [
             { type: 'image_url', image_url: { url: image } },
-            { type: 'text', text: prompt(w, h) },
+            { type: 'text', text: planImagePrompt(w, h) },
           ],
         }],
       },

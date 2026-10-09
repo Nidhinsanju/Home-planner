@@ -1,0 +1,16 @@
+{
+  // Compiles the training-data generator (and the app modules it uses) for Node.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "rootDir": "../..",
+    "outDir": "../../.training-build",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": ["generate.ts"]
+}

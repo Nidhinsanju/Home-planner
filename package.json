@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "oxlint src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "training-data": "tsc -p scripts/training-data/tsconfig.json && node scripts/training-data/run.cjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
