@@ -1,6 +1,6 @@
 // Generates a fine-tuning dataset for the app's AI (qwen2.5vl:3b), in chat "messages" JSONL.
 //
-//   npm run training-data            -> training-data/{train,val}.jsonl + images/ + README.md
+//   npm run training-data            -> training-data/ (jsonl, images, README, train_kaggle.py) + training-data.zip
 //   npm run training-data -- 4000 800 600 7   (text samples, drawing chats, image readings, seed)
 //
 // Every example uses the app's real prompts (src/lib/aiPrompt.ts) and real plan engine, and
@@ -15,6 +15,7 @@ import { emptyPlan, itemSize, Plan, WALL_DEFAULTS } from '../../src/plan/types';
 import { planImagePrompt, systemMessage, userMessageText } from '../../src/lib/aiPrompt';
 import { drawHouse, HouseRoom, int, mulberry32, pick, randomHouse, roomD, roomW, sizeLabel } from './house';
 import { ROOM_ZONES, TYPE_LABEL, VASTU_QA, Zone } from './vastu';
+import { zipFolder } from './zip';
 
 const [nText = 2400, nDrawingChat = 500, nVision = 500, seed = 42] = process.argv.slice(2).map(Number);
 const OUT = path.resolve('training-data');
@@ -360,6 +361,8 @@ for (const s of samples) {
 fs.writeFileSync(path.join(OUT, 'train.jsonl'), train.join('\n') + '\n');
 fs.writeFileSync(path.join(OUT, 'val.jsonl'), val.join('\n') + '\n');
 fs.copyFileSync(path.resolve('scripts/training-data/README.md'), path.join(OUT, 'README.md'));
+fs.copyFileSync(path.resolve('scripts/training-data/train_kaggle.py'), path.join(OUT, 'train_kaggle.py'));
+zipFolder(OUT, path.resolve('training-data.zip'));
 
 const byKind: Record<string, number> = {};
 for (const s of samples) byKind[s.kind] = (byKind[s.kind] ?? 0) + 1;
@@ -367,3 +370,4 @@ console.log(`Wrote ${train.length} train + ${val.length} val samples to ${OUT}`)
 console.log('By kind:', byKind);
 console.log('Rejected by the app (not written):', rejected);
 console.log(`Longest sample: ${longest} chars (~${Math.round(longest / 3.5)} tokens)`);
+console.log(`Zipped for upload: ${path.resolve('training-data.zip')}`);

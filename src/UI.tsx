@@ -2,7 +2,6 @@ import React from 'react';
 import { getChatHistory, clearChatHistory } from './actions/chat';
 import type { Background } from './plan/types';
 import { PlanImageCard } from './editor/PlanImageCard';
-import { shrinkForVision } from './editor/backgroundImage';
 
 export const TopBar = ({ view, setView, onUndo, canUndo, onRedo, canRedo, unit, setUnit, onSave, dirty, onLogout, username, cutaway, setCutaway }: any) => (
   <div className="top-bar">
@@ -111,67 +110,92 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
     abortRef.current.abort();
     abortRef.current = null;
     setIsLoading(false);
-    setMessages(prev => [...prev, { text: "Stopped. No changes were made.", isAi: true }]);
+    const done = stepsDoneRef.current;
+    setMessages(prev => [...prev, { text: done ? `Stopped. The ${done} step${done > 1 ? "s" : ""} already done stay on the plan (use Undo to remove them).` : "Stopped. No changes were made.", isAi: true }]);
   };
 
-  // A small copy of the uploaded floor plan, sent with each message so the AI can look at it.
-  // Kept small (768px) to leave room in the model's context; made once per image.
-  const chatImageRef = React.useRef<{ src: string; image: string } | null>(null);
-  const chatImage = async () => {
-    const src = background?.src;
-    if (!src) return undefined;
-    if (chatImageRef.current?.src !== src) {
-      try {
-        chatImageRef.current = { src, image: (await shrinkForVision(src, 768)).image };
-      } catch {
-        return undefined; // chat still works without the picture
-      }
-    }
-    return chatImageRef.current.image;
+  // The plan as the AI should see it, kept current while a multi-step plan is being built.
+  const sceneDataRef = React.useRef(sceneData);
+  React.useEffect(() => { sceneDataRef.current = sceneData; });
+  // After an AI change, waits (up to ~1 s) for the editor to re-render with the new plan, so
+  // the next step is applied to it and not to the plan before the change.
+  const nextScene = async (prev: unknown) => {
+    for (let i = 0; i < 60 && sceneDataRef.current === prev; i++) await new Promise(r => setTimeout(r, 16));
   };
+  const applyNow = async (cmds: any[]) => {
+    const before = sceneDataRef.current;
+    const res = (await onBuildCommandsRef.current?.(cmds)) || { changed: false, notes: [] };
+    if (res.changed) await nextScene(before);
+    return res;
+  };
+  // Steps of a cloud plan already applied, so Stop can say they stay on the plan.
+  const stepsDoneRef = React.useRef(0);
 
-  const handleSend = async () => {
+  const say = (text: string) => setMessages(prev => [...prev, { text, isAi: true }]);
+
+  const handleSend = () => {
     if (!input.trim() || isLoading) return;
     const userMsg = input.trim();
     setMessages(prev => [...prev, { text: userMsg, isAi: false }]);
     setInput('');
+    run(userMsg);
+  };
+
+  // Sends one chat message. The local model answers, or decides the request is too complex and
+  // has the cloud model plan it as steps, which the local model then carries out. If the local
+  // model's own commands can't be applied, the cloud model is asked to plan it instead.
+  const run = async (prompt: string) => {
+    const planId = activePlanIndex === 0 ? 'p1' : activePlanIndex === 1 ? 'p2' : 'example';
+    if (planId === 'example') {
+      say("AI Assistant is disabled in the example view.");
+      return;
+    }
     setIsLoading(true);
     const controller = new AbortController();
     abortRef.current = controller;
-
-    try {
-      const planId = activePlanIndex === 0 ? 'p1' : activePlanIndex === 1 ? 'p2' : 'example';
-      if (planId === 'example') {
-        setMessages(prev => [...prev, { text: "AI Assistant is disabled in the example view.", isAi: true }]);
-        return;
-      }
-      const sentFromPlan = activePlanIndex;
-      const token = localStorage.getItem('token') || '';
-      const image = await chatImage();
+    stepsDoneRef.current = 0;
+    const sentFromPlan = activePlanIndex;
+    // Stopped, or the user switched plans while waiting: don't touch the plan.
+    const stale = () => controller.signal.aborted || activePlanRef.current !== sentFromPlan;
+    const token = localStorage.getItem('token') || '';
+    const post = async (text: string, mode: 'auto' | 'cloud' | 'step') => {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: userMsg, planId, sceneData, image }),
+        body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode }),
         signal: controller.signal,
       });
-      const res = await response.json();
-      // Stopped, or the user switched plans while waiting: don't touch the plan.
-      if (controller.signal.aborted || res.aborted || activePlanRef.current !== sentFromPlan) return;
-      // The answer is in; from here on the result is applied and Stop no longer applies.
-      abortRef.current = null;
-      if (res.error) {
-        setMessages(prev => [...prev, { text: "Error: " + res.error, isAi: true }]);
-      } else if (res.buildCommands?.length) {
+      return response.json();
+    };
+
+    try {
+      let res = await post(prompt, 'auto');
+      if (stale() || res.aborted) return;
+      if (res.buildCommands?.length) {
         // Apply first, so the reply can say whether anything actually changed.
-        const { changed, notes } = (await onBuildCommandsRef.current?.(res.buildCommands)) || { changed: false, notes: [] };
-        const summary = res.reply || (changed ? "Done, I've updated the plan." : "I couldn't make that change.");
-        setMessages(prev => [...prev, ...[summary, ...notes].map(text => ({ text, isAi: true }))]);
+        const { changed, notes } = await applyNow(res.buildCommands);
+        if (changed || !res.cloud) {
+          // The answer is in and applied; Stop no longer applies.
+          abortRef.current = null;
+          const summary = res.reply || (changed ? "Done, I've updated the plan." : "I couldn't make that change.");
+          setMessages(prev => [...prev, ...[summary, ...notes].map(text => ({ text, isAi: true }))]);
+          return;
+        }
+        say("That's trickier than it looked, so I'm asking the advanced AI to plan it.");
+        res = await post(prompt, 'cloud');
+        if (stale() || res.aborted) return;
+      }
+      if (res.error) {
+        say("Error: " + res.error);
+      } else if (res.steps) {
+        if (res.reply) say(res.reply);
+        await runSteps(res.steps, post, stale);
       } else if (res.reply) {
-        setMessages(prev => [...prev, { text: res.reply, isAi: true }]);
+        say(res.reply);
       }
     } catch {
       if (controller.signal.aborted) return; // Stop already reported it
-      setMessages(prev => [...prev, { text: "Sorry, I encountered an error communicating with the server.", isAi: true }]);
+      say("Sorry, I encountered an error communicating with the server.");
     } finally {
       // An aborted request was already wound down by Stop / the plan switch.
       if (!controller.signal.aborted) setIsLoading(false);
@@ -179,6 +203,31 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
     }
   };
 
+  // Carries out a cloud plan one step at a time. The local model turns each instruction into
+  // commands for the current plan; if it fails twice, the cloud model's own command for that
+  // step is used instead.
+  const runSteps = async (steps: { instruction: string; command: any }[], post: (text: string, mode: 'step') => Promise<any>, stale: () => boolean) => {
+    let failed = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      say(`Step ${i + 1}/${steps.length}: ${step.instruction}`);
+      let done = false;
+      let notes: string[] = [];
+      for (let attempt = 0; attempt < 2 && !done; attempt++) {
+        const res = await post(step.instruction, 'step');
+        if (stale() || res.aborted) return;
+        if (res.buildCommands?.length) ({ changed: done, notes } = await applyNow(res.buildCommands));
+      }
+      if (!done && step.command) ({ changed: done, notes } = await applyNow([step.command]));
+      if (stale()) return;
+      if (done) stepsDoneRef.current++;
+      else {
+        failed++;
+        say(`I couldn't do step ${i + 1}.${notes.length ? ' ' + notes.join(' ') : ''}`);
+      }
+    }
+    if (steps.length) say(failed ? `Finished, but ${failed} of ${steps.length} steps couldn't be done.` : 'All done! Use Undo to step back through the changes.');
+  };
   const handleClearChat = async () => {
     const planId = activePlanIndex === 0 ? 'p1' : activePlanIndex === 1 ? 'p2' : 'example';
     if (planId === 'example') return;

@@ -10,6 +10,7 @@ command engine before being kept.
 |---|---|
 | `train.jsonl` / `val.jsonl` | One chat per line: `{"messages": [...]}` (about 95% / 5%) |
 | `images/plan_XXXX.png` | Synthetic floor plans used by the image examples |
+| `train_kaggle.py` | The training script (see below) |
 
 Each message's `content` is either a string or a list of parts:
 `{"type": "text", "text": ...}` and `{"type": "image", "image": "images/plan_0001.png"}`
@@ -26,105 +27,58 @@ What the examples teach:
 
 ## Train on Kaggle (free T4 GPU)
 
-1. Zip this folder and upload it as a **Kaggle Dataset** (Datasets → New dataset).
+1. Upload this zip as a **Kaggle Dataset** (Datasets → New dataset).
 2. Create a **Notebook**, add the dataset, and set *Settings → Accelerator → GPU T4*,
    *Internet → On*.
-3. Run the cells below. Change `DATA` to your dataset's path under `/kaggle/input/`.
+3. Run one cell (use your dataset's folder name):
 
-```python
-!pip install -q unsloth
-```
+   ```
+   !python /kaggle/input/<your-dataset>/train_kaggle.py
+   ```
 
-```python
-import json, os
-from PIL import Image
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
-from trl import SFTTrainer, SFTConfig
+   For a quick trial first (~20 minutes): add `--limit 200 --eval-n 10`.
 
-DATA = "/kaggle/input/vastu-planner-training-data"   # <- your dataset path
+`train_kaggle.py` finds the dataset itself and installs Unsloth if needed. It scores the model
+on validation examples before training, trains a LoRA adapter, then scores it again.
+Results go to `/kaggle/working/vastu-planner/` (download them from the notebook's *Output* tab):
 
-model, tokenizer = FastVisionModel.from_pretrained(
-    "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit", load_in_4bit=True, use_gradient_checkpointing="unsloth",
-)
-model = FastVisionModel.get_peft_model(
-    model, finetune_vision_layers=True, finetune_language_layers=True,
-    finetune_attention_modules=True, finetune_mlp_modules=True,
-    r=16, lora_alpha=16, lora_dropout=0, bias="none", random_state=3407,
-)
+| Output | What it is |
+|---|---|
+| `lora/`, `vastu-planner-lora.zip` | The trained LoRA adapter (small) |
+| `merged/` | Base model + adapter as one 16-bit model (~7 GB; skip with `--no-merge`) |
+| `scores.json` | Validation scores before and after training |
+| `Modelfile.adapter`, `Modelfile.merged` | Ollama import files (see below) |
 
-def load(file):
-    rows = []
-    for line in open(os.path.join(DATA, file), encoding="utf-8"):
-        msgs = json.loads(line)["messages"]
-        for m in msgs:  # the collator wants content as a list of parts, with PIL images
-            if isinstance(m["content"], str):
-                m["content"] = [{"type": "text", "text": m["content"]}]
-            else:
-                for part in m["content"]:
-                    if part["type"] == "image":
-                        part["image"] = Image.open(os.path.join(DATA, part["image"])).convert("RGB")
-        rows.append({"messages": msgs})
-    return rows
-
-train, val = load("train.jsonl"), load("val.jsonl")
-print(len(train), "train /", len(val), "val")
-```
-
-```python
-FastVisionModel.for_training(model)
-trainer = SFTTrainer(
-    model=model, tokenizer=tokenizer,
-    data_collator=UnslothVisionDataCollator(model, tokenizer),
-    train_dataset=train, eval_dataset=val,
-    args=SFTConfig(
-        per_device_train_batch_size=1, gradient_accumulation_steps=8,
-        num_train_epochs=1, learning_rate=2e-4, warmup_steps=20,
-        optim="adamw_8bit", weight_decay=0.01, lr_scheduler_type="linear",
-        logging_steps=10, eval_strategy="steps", eval_steps=200,
-        fp16=True, bf16=False,              # T4 has no bf16
-        max_seq_length=4096,                # the app's prompts are ~2-3k tokens
-        remove_unused_columns=False, dataset_text_field="", dataset_kwargs={"skip_prepare_dataset": True},
-        output_dir="outputs", report_to="none", seed=3407,
-    ),
-)
-trainer.train()
-```
-
-```python
-model.save_pretrained("planner-lora"); tokenizer.save_pretrained("planner-lora")        # small LoRA adapter
-model.save_pretrained_merged("planner-merged", tokenizer, save_method="merged_16bit")  # full model
-```
-
-Download `planner-lora` / `planner-merged` from the notebook's output (*Output* tab).
+Useful options: `--epochs 2`, `--lr 1e-4`, `--max-hours 8`, `--resume` (continue after a
+stopped session), `--gguf` (also try a GGUF export). Run with `--help` for all of them.
 
 ### Notes
 
 - **Time**: one epoch over ~3,400 examples of 2–3k tokens takes several hours on a T4.
-  Kaggle sessions stop after 12 hours; to go faster, regenerate with fewer examples
-  (`npm run training-data -- 1500 300 300`) or lower `max_seq_length` by trimming history.
-- **Text-only and image examples are mixed.** Recent Unsloth versions handle that in one run.
-  If the collator complains about examples without images, train in two passes: first the
-  image examples, then the text ones.
-- **Check before using it**: compare the fine-tuned model with the original on `val.jsonl`
-  (e.g. does it output the same JSON?) before switching the app over.
+  Training stops cleanly at `--max-hours` (default 10.5, Kaggle sessions end at 12) and
+  still saves. To go faster, regenerate a smaller set (`npm run training-data -- 1500 300 300`).
+- **Text-only and image examples are mixed.** If the installed Unsloth can't batch them
+  together, the script notices and trains in two passes (images, then text).
+- **Check the scores** in `scores.json` before switching the app over: "command" is the share of
+  exactly right JSON commands, "text" the share answered in words, "read-image" the share of
+  rooms found with the right name and box.
 
 ## Using it in Ollama
 
 Importing a fine-tuned **vision** model into Ollama is the least standard step; check
 Ollama's "Importing a model" docs for your version. Two routes to try:
 
-1. **Adapter on top of the base model** (smallest), `Modelfile`:
+1. **Adapter on top of the base model** (smallest), `Modelfile.adapter`:
    ```
    FROM qwen2.5vl:3b
-   ADAPTER ./planner-lora
+   ADAPTER ./lora
    ```
-2. **Full merged model**, `Modelfile`:
+2. **Full merged model**, `Modelfile.merged`:
    ```
-   FROM ./planner-merged
+   FROM ./merged
    ```
 
-Then `ollama create vastu-planner -f Modelfile`, set `AI_MODEL=vastu-planner` (and
+Then `ollama create vastu-planner -f Modelfile.adapter` (or `.merged`), set `AI_MODEL=vastu-planner` (and
 `AI_VISION_MODEL=vastu-planner`) in the app's `.env`, and restart `npm run dev`.
 If Ollama refuses the architecture, convert with llama.cpp (`convert_hf_to_gguf.py`, which
 also writes the vision projector `mmproj` file) and import the GGUF instead.

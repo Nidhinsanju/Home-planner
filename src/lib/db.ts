@@ -83,6 +83,28 @@ const chatHistorySchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
+// What the cloud model read from an uploaded image, keyed by a hash of the image, so the same
+// image is never sent (and billed) twice.
+const imageReadSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  hash: { type: String, required: true },
+  summary: { type: String, default: '' },
+  rooms: { type: Array, default: [] },
+}, { timestamps: true });
+imageReadSchema.index({ userId: 1, hash: 1 }, { unique: true });
+
+// Cloud model calls and tokens per user per day (UTC date, "YYYY-MM-DD"), for the daily limit.
+const cloudUsageSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  day: { type: String, required: true },
+  calls: { type: Number, default: 0 },
+  inputTokens: { type: Number, default: 0 },
+  outputTokens: { type: Number, default: 0 },
+});
+cloudUsageSchema.index({ userId: 1, day: 1 }, { unique: true });
+
 export const User = mongoose.models.User || mongoose.model('User', userSchema);
+export const ImageRead = mongoose.models.ImageRead || mongoose.model('ImageRead', imageReadSchema);
+export const CloudUsage = mongoose.models.CloudUsage || mongoose.model('CloudUsage', cloudUsageSchema);
 export const Build = mongoose.models.Build || mongoose.model('Build', buildSchema);
 export const ChatHistory = mongoose.models.ChatHistory || mongoose.model('ChatHistory', chatHistorySchema);

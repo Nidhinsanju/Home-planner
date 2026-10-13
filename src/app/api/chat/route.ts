@@ -1,4 +1,4 @@
-import { runChat } from '../../../lib/aiChat';
+import { runChat, type ChatMode } from '../../../lib/aiChat';
 
 // A route (not a server action) so the browser can abort it: when the user presses Stop
 // the request disconnects, request.signal fires, and the AI call is cancelled.
@@ -18,6 +18,7 @@ export async function POST(request: Request) {
   if (!prompt) return Response.json({ error: 'Empty message' }, { status: 400 });
 
   const image = typeof body.image === 'string' ? body.image : undefined;
-  const result = await runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal, image);
+  const mode: ChatMode = ['auto', 'cloud', 'step'].includes(body.mode) ? body.mode : 'auto';
+  const result = await runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal, image, mode);
   return Response.json(result);
 }
