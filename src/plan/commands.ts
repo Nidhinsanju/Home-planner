@@ -1,5 +1,6 @@
-import { Background, itemSize, itemSpec, Plan, ROOM_TYPES, Vec, WALL_DEFAULTS } from './types';
-import { imageRoomBounds, imageRoomCommands } from './imageRooms';
+import { Background, itemSize, itemSpec, normalizeRoomType, Plan, ROOM_TYPES, Vec, WALL_DEFAULTS } from './types';
+import { imageRoomBounds } from './imageRooms';
+import { buildFromDrawing, drawingLayout } from './buildDrawing';
 import {
   addItem, addOpening, addRectRoom, addWall, clearPlan, deleteItem, deleteOpening, deleteRoom, deleteWalls,
   moveOpeningTo, moveRoom, offsetWall, openingCenter, resizeItem, setRoomLabel, updateItem, updateOpening, updateWall, wallEnds,
@@ -35,12 +36,6 @@ function directionVector(d: unknown) {
   return { x: ew / l, y: ns / l };
 }
 
-const ROOM_ALIASES: Record<string, string> = { bedroom: 'bed', bathroom: 'toilet', bath: 'toilet', puja: 'pooja', prayer: 'pooja', hall: 'living', garage: 'parking', stairs: 'staircase', storage: 'store', office: 'study' };
-const normalizeRoomType = (t: unknown) => {
-  const s = String(t || '').toLowerCase().trim();
-  const id = ROOM_ALIASES[s] || s;
-  return ROOM_TYPES.some(r => r.id === id) ? id : '';
-};
 
 // Extent of everything drawn, or null for an empty plan. With `house`, only the walls count
 // (when there are any), so a sofa or car outside doesn't shift "the north-east of the house".
@@ -82,12 +77,30 @@ export function describePlan(plan: Plan) {
       const s = itemSize(i);
       return { id: i.id, type: i.type, x: r1(i.x), y: r1(i.y), width: r1(s.w), depth: r1(s.d), height: r1(s.h) };
     }),
-    ...(plan.background?.analysis ? { referenceDrawing: describeDrawing(plan.background) } : {}),
+    ...(plan.background?.analysis ? { referenceDrawing: describeDrawing(plan, plan.background) } : {}),
   };
 }
 
 // The uploaded floor plan as the vision model read it, positioned on the plan in feet.
-function describeDrawing(bg: Background) {
+function describeDrawing(plan: Plan, bg: Background) {
+  const layout = drawingLayout(plan);
+  if (layout && !('error' in layout)) {
+    const ex = bg.analysis!.extraction!;
+    return {
+      summary: bg.analysis?.summary ?? '',
+      scale: `${r1(layout.pxPerFt)} px per ft, worked out from the written room sizes`,
+      rooms: layout.payload.rooms.map((r, i) => {
+        const xs = r.polygon.map(p => p[0]), ys = r.polygon.map(p => p[1]);
+        return {
+          name: r.name, type: r.type, writtenSize: ex.rooms[i]?.label ?? null,
+          bounds: { minX: r1(Math.min(...xs)), minY: r1(Math.min(...ys)), maxX: r1(Math.max(...xs)), maxY: r1(Math.max(...ys)) },
+          openTo: ex.rooms[i]?.openTo ?? [],
+        };
+      }),
+      doors: ex.doors.length,
+      windows: ex.windows.length,
+    };
+  }
   return {
     summary: bg.analysis?.summary ?? '',
     scaleSet: !!bg.calibrated,
@@ -223,11 +236,11 @@ export function applyCommand(plan: Plan, cmd: BuildCommand): { plan: Plan; error
     case 'buildFromDrawing': {
       const bg = plan.background;
       if (!bg?.analysis?.rooms.length) return { plan, error: "I haven't read any rooms from an uploaded drawing yet. Upload a floor plan (Build tab → Background image) and let me read it first." };
-      const wanted = Array.isArray(cmd.rooms) ? cmd.rooms.map((n: unknown) => String(n).toLowerCase().trim()) : null;
-      const cmds = imageRoomCommands(bg).filter(c => !wanted || wanted.includes(c.name.toLowerCase().trim()) || wanted.includes(String(c.roomType).toLowerCase()));
-      if (cmds.length === 0) return { plan, error: `The drawing has no room called ${wanted?.join(', ')}.` };
-      const res = applyCommands(plan, cmds);
-      return { plan: res.plan, error: res.errors.join(' ') || undefined };
+      const only = Array.isArray(cmd.rooms) ? cmd.rooms.map((n: unknown) => String(n)) : undefined;
+      const built = buildFromDrawing(plan, only);
+      if (built) return 'error' in built ? { plan, error: built.error } : { plan: built.plan, error: built.result.errors.join(' ') || undefined };
+      // Read before the full reader existed: too imprecise to build from.
+      return { plan, error: 'This drawing was read by an older reader, so I can\'t build it to scale. Press "Re-read floor plan" on the image card in the chat, then ask me again.' };
     }
 
     case 'deleteAll':

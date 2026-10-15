@@ -769,3 +769,14 @@ fieldset.plain:disabled { opacity: 0.6; }
 .plan-card-actions button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
 .plan-card-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .plan-card-inline { display: flex; justify-content: flex-start; }
+
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: #cbd0d6;
+  margin: 10px 0;
+  cursor: pointer;
+}
+.check-row input { margin-top: 2px; }

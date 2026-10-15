@@ -2,18 +2,18 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import type { Background } from '../plan/types';
-import { shrinkForVision } from './backgroundImage';
+import { imageSize } from './backgroundImage';
 
 // Chat card for an uploaded floor plan. A newly uploaded image is sent to the vision model;
 // the card then shows what it found and asks whether to build those rooms or just keep the
 // drawing as reference for the chat. The choice is stored on the background, so the question
-// isn't asked again.
+// isn't asked again. Re-read sends the image to the model again, ignoring the cached reading.
 
 interface Props {
   background?: Background;
   planId: 'p1' | 'p2';
   onImageRead: (src: string, analysis: NonNullable<Background['analysis']>) => Promise<string[]>;
-  onImageChoice: (use: 'build' | 'context') => Promise<{ built: number; notes: string[] }>;
+  onImageChoice: (use: 'build' | 'context') => Promise<{ message: string; notes: string[] }>;
   onMessage: (text: string) => void;
 }
 
@@ -29,24 +29,24 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
   const handlers = useRef({ onImageRead, onImageChoice, onMessage });
   useEffect(() => { handlers.current = { onImageRead, onImageChoice, onMessage }; });
 
-  const read = async (imageSrc: string) => {
+  const read = async (imageSrc: string, force = false) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setStatus('reading');
     setError('');
     try {
-      const { image, width, height } = await shrinkForVision(imageSrc);
+      const { width, height } = await imageSize(imageSrc);
       const response = await fetch('/api/plan-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
-        body: JSON.stringify({ planId, image, width, height }),
+        body: JSON.stringify({ planId, image: imageSrc, width, height, force }),
         signal: controller.signal,
       });
       const res = await response.json();
       if (controller.signal.aborted || res.aborted) return;
       if (res.error) throw new Error(res.error);
-      const notes = await handlers.current.onImageRead(imageSrc, { summary: res.summary, rooms: res.rooms });
+      const notes = await handlers.current.onImageRead(imageSrc, { summary: res.summary, rooms: res.rooms, extraction: res.extraction, imageWidth: res.imageWidth, imageHeight: res.imageHeight });
       notes.forEach(handlers.current.onMessage);
       setStatus('idle');
     } catch (e: any) {
@@ -74,13 +74,8 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
 
   const choose = async (use: 'build' | 'context') => {
     setStatus('choosing');
-    const { built, notes } = await handlers.current.onImageChoice(use);
-    const msg = use === 'context'
-      ? 'OK, I\'ll keep your drawing as reference. You can ask things like "build the kitchen from the drawing" or "what rooms are on it?".'
-      : built > 0
-        ? `I built ${built} room${built === 1 ? '' : 's'} from your drawing. Drag walls to fine-tune them, or ask me for changes.`
-        : "I couldn't build any rooms from the drawing. You can trace it with Draw Room instead.";
-    [msg, ...notes].forEach(handlers.current.onMessage);
+    const { message, notes } = await handlers.current.onImageChoice(use);
+    [message, ...notes].filter(Boolean).forEach(handlers.current.onMessage);
     setStatus('idle');
   };
 
@@ -91,7 +86,7 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
     return (
       <Card src={background.src}>
         <p className="chat-thinking">Reading your floor plan<span>.</span><span>.</span><span>.</span></p>
-        <p className="plan-card-muted">This can take up to a minute the first time while the vision model loads.</p>
+        <p className="plan-card-muted">Reading every room, written size, door and window. This can take a minute.</p>
         <div className="plan-card-actions"><button onClick={cancel}>Cancel</button></div>
       </Card>
     );
@@ -114,7 +109,12 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
       </div>
     );
   }
-  if (background.use) return null; // already decided
+  const reread = (
+    <div className="plan-card-inline">
+      <button onClick={() => read(background.src, true)} title="Send the image to the AI again, ignoring the saved reading">Re-read floor plan</button>
+    </div>
+  );
+  if (background.use) return reread; // already decided
 
   return (
     <Card src={background.src}>
@@ -124,13 +124,14 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
           {analysis.rooms.map((r, i) => <span key={i}>{r.name || r.type || 'Room'}</span>)}
         </div>
       )}
-      {!background.calibrated && analysis.rooms.length > 0 && (
+      {!analysis.extraction && !background.calibrated && analysis.rooms.length > 0 && (
         <p className="plan-card-warn">Set the scale first (Build tab → Background image → Set scale) so the rooms come out at the right size.</p>
       )}
       <p className="plan-card-muted">Should I build these rooms, or keep the drawing as reference while you design?</p>
       <div className="plan-card-actions">
         <button className="primary" disabled={status === 'choosing' || analysis.rooms.length === 0} onClick={() => choose('build')}>Build it for me</button>
         <button disabled={status === 'choosing'} onClick={() => choose('context')}>Keep as reference</button>
+        <button disabled={status === 'choosing'} onClick={() => read(background.src, true)}>Re-read</button>
       </div>
     </Card>
   );

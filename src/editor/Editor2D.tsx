@@ -558,7 +558,9 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           return (
             <g key={w.id} data-kind="wall" data-id={w.id} style={{ cursor: readOnly ? 'default' : 'move' }}>
               <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={Math.max(w.thickness, px(12))} />
-              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#23262b'} strokeWidth={Math.max(w.thickness, px(2))} strokeLinecap="square" />
+              {w.divider
+                ? <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#8a9199'} strokeWidth={px(sel || hov ? 2.5 : 1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />
+                : <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#23262b'} strokeWidth={Math.max(w.thickness, px(2))} strokeLinecap="square" />}
             </g>
           );
         })}

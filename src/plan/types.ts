@@ -1,3 +1,5 @@
+import type { Extraction } from './extraction';
+
 // The building model. Everything is in feet on a 2D plan: x grows to the right (east),
 // y grows downwards on screen (south) and maps to world Z in 3D. North is -y.
 //
@@ -18,6 +20,9 @@ export interface Wall {
   b: string; // corner id
   thickness: number;
   height: number;
+  // A room divider: splits an open-plan area into rooms on the plan (e.g. kitchen | living)
+  // but is not built in 3D and holds no doors or windows.
+  divider?: boolean;
 }
 
 export interface Opening {
@@ -67,7 +72,9 @@ export interface Background {
   opacity: number; // 0..1
   locked: boolean; // when unlocked, dragging the image moves it
   calibrated?: boolean; // the scale was set by measuring a known length
-  analysis?: { summary: string; rooms: ImageRoom[] }; // what the AI read from the image
+  // What the AI read from the image: rooms as image fractions, plus (from newer reads) the full
+  // extraction in pixels of an imageWidth x imageHeight copy, which builds the plan to scale.
+  analysis?: { summary: string; rooms: ImageRoom[]; extraction?: Extraction; imageWidth?: number; imageHeight?: number };
   use?: 'build' | 'context'; // the user's choice after the AI read it
 }
 
@@ -112,6 +119,17 @@ export const ROOM_TYPES: { id: string; name: string; color: string }[] = [
 ];
 export const UNNAMED_ROOM_COLOR = '#e9e4da';
 export const roomType = (id?: string) => ROOM_TYPES.find(t => t.id === id);
+
+// Maps the words people (and AI models) use for a room to a room type id, or '' if unknown.
+const ROOM_ALIASES: Record<string, string> = {
+  bedroom: 'bed', bathroom: 'toilet', bath: 'toilet', puja: 'pooja', prayer: 'pooja', hall: 'living', garage: 'parking', stairs: 'staircase',
+  storage: 'store', office: 'study', closet: 'store', 'walk-in closet': 'store', laundry: 'utility', mech: 'utility', mechanical: 'utility', hallway: 'hallway', corridor: 'hallway',
+};
+export const normalizeRoomType = (t: unknown) => {
+  const s = String(t || '').toLowerCase().trim();
+  const id = ROOM_ALIASES[s] || s;
+  return ROOM_TYPES.some(r => r.id === id) ? id : '';
+};
 
 // Furniture / fixtures. Default sizes in feet (width along x, depth along y, height); `color`
 // is the main material (fabric, wood, paint). Heights: bed = headboard, TV unit = cabinet.

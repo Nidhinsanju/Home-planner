@@ -369,6 +369,10 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
             <button className="secondary-btn" onClick={() => onCommit(ops.addOpening(plan, wall.id, mid, 'door'))}><DoorOpen size={14} /> Door</button>
             <button className="secondary-btn" onClick={() => onCommit(ops.addOpening(plan, wall.id, mid, 'window'))}><AppWindow size={14} /> Window</button>
           </div>
+          <label className="check-row">
+            <input type="checkbox" checked={!!wall.divider} onChange={e => onCommit(ops.updateWall(plan, wall.id, { divider: e.target.checked }))} />
+            Room divider (splits an open area into rooms; not built in 3D, no doors or windows)
+          </label>
           <p className="muted">Drag the wall on the plan to move it; connected walls follow. Split it to make an alcove.</p>
           <DangerButton onClick={() => { onCommit(ops.deleteWalls(plan, [wall.id])); setSelection(null); }}>Delete wall</DangerButton>
         </fieldset>

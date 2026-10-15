@@ -1,13 +1,15 @@
 import React from 'react';
-import { getChatHistory, clearChatHistory } from './actions/chat';
+import { getChatHistory, clearChatHistory, saveChatTurn } from './actions/chat';
 import type { Background } from './plan/types';
+import type { SetPlanPayload } from './plan/setPlan';
 import { PlanImageCard } from './editor/PlanImageCard';
 
-export const TopBar = ({ view, setView, onUndo, canUndo, onRedo, canRedo, unit, setUnit, onSave, dirty, onLogout, username, cutaway, setCutaway }: any) => (
+export const TopBar = ({ view, setView, onUndo, canUndo, onRedo, canRedo, unit, setUnit, onSave, dirty, onRemovePlan, onLogout, username, cutaway, setCutaway }: any) => (
   <div className="top-bar">
     <div className="title">Home Planner {username && <span style={{ color: '#8f969f', fontWeight: 'normal' }}>- Welcome, {username}</span>}</div>
     <div className="actions">
       {onSave && <button className="ui-btn dark" onClick={onSave} title="Save (Ctrl+S)">💾 Save{dirty ? ' •' : ''}</button>}
+      {onRemovePlan && <button className="ui-btn" onClick={onRemovePlan} style={{ color: '#ef4444' }} title="Delete everything on this plan">🗑 Remove Plan</button>}
       <button className="ui-btn" onClick={onUndo} disabled={!canUndo} style={{ opacity: canUndo ? 1 : 0.5 }} title="Undo (Ctrl+Z)">↶ Undo</button>
       <button className="ui-btn" onClick={onRedo} disabled={!canRedo} style={{ opacity: canRedo ? 1 : 0.5 }} title="Redo (Ctrl+Y)">Redo ↷</button>
       <button className="ui-btn" onClick={() => setUnit(unit === 'ft' ? 'mt' : 'ft')}>Unit: {unit === 'ft' ? 'ft' : 'm'}</button>
@@ -41,8 +43,13 @@ export const Compass: React.FC<{ rotation: number }> = ({ rotation }) => {
   );
 };
 
-export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, background, onImageRead, onImageChoice }: {
-  onBuildCommands?: (cmds: any[]) => Promise<{ changed: boolean; notes: string[] }>;
+// The outcome of applying an AI change: whether the plan changed, what changed in words
+// (worked out by comparing the plans), and any problems.
+export type AiChange = { changed: boolean; summary: string; notes: string[] };
+
+export const ChatSidebar = ({ onBuildCommands, onSetPlan, activePlanIndex, sceneData, background, onImageRead, onImageChoice }: {
+  onBuildCommands?: (cmds: any[]) => Promise<AiChange>;
+  onSetPlan?: (payload: SetPlanPayload) => Promise<AiChange>;
   activePlanIndex: number;
   sceneData?: any;
   background?: Background;
@@ -59,10 +66,15 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
   // The AI reply arrives after an await; read the latest handler/plan through refs so the
   // commands apply to the current scene (not the one captured when the message was sent).
   const onBuildCommandsRef = React.useRef(onBuildCommands);
+  const onSetPlanRef = React.useRef(onSetPlan);
   const activePlanRef = React.useRef(activePlanIndex);
+  // The uploaded floor plan, sent with every message so the model can see it.
+  const imageRef = React.useRef(background?.src);
   React.useEffect(() => {
     onBuildCommandsRef.current = onBuildCommands;
+    onSetPlanRef.current = onSetPlan;
     activePlanRef.current = activePlanIndex;
+    imageRef.current = background?.src;
   });
 
   React.useEffect(() => {
@@ -122,12 +134,13 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
   const nextScene = async (prev: unknown) => {
     for (let i = 0; i < 60 && sceneDataRef.current === prev; i++) await new Promise(r => setTimeout(r, 16));
   };
-  const applyNow = async (cmds: any[]) => {
+  const applyNow = async (apply: () => Promise<AiChange> | undefined): Promise<AiChange> => {
     const before = sceneDataRef.current;
-    const res = (await onBuildCommandsRef.current?.(cmds)) || { changed: false, notes: [] };
+    const res = (await apply()) || { changed: false, summary: '', notes: [] };
     if (res.changed) await nextScene(before);
     return res;
   };
+  const applyCommandsNow = (cmds: any[]) => applyNow(() => onBuildCommandsRef.current?.(cmds));
   // Steps of a cloud plan already applied, so Stop can say they stay on the plan.
   const stepsDoneRef = React.useRef(0);
 
@@ -162,7 +175,7 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode }),
+        body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode, image: imageRef.current }),
         signal: controller.signal,
       });
       return response.json();
@@ -171,14 +184,21 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
     try {
       let res = await post(prompt, 'auto');
       if (stale() || res.aborted) return;
+      // Applies the change first, so the reply says what actually happened, and saves the turn.
+      const report = async (change: AiChange) => {
+        abortRef.current = null; // the answer is in and applied; Stop no longer applies
+        const lines = [res.reply, change.summary, ...change.notes].filter(Boolean);
+        setMessages(prev => [...prev, ...lines.map(text => ({ text, isAi: true }))]);
+        await saveChatTurn(token, planId, prompt, lines.join('\n'));
+      };
+      if (res.setPlan) {
+        await report(await applyNow(() => onSetPlanRef.current?.(res.setPlan)));
+        return;
+      }
       if (res.buildCommands?.length) {
-        // Apply first, so the reply can say whether anything actually changed.
-        const { changed, notes } = await applyNow(res.buildCommands);
-        if (changed || !res.cloud) {
-          // The answer is in and applied; Stop no longer applies.
-          abortRef.current = null;
-          const summary = res.reply || (changed ? "Done, I've updated the plan." : "I couldn't make that change.");
-          setMessages(prev => [...prev, ...[summary, ...notes].map(text => ({ text, isAi: true }))]);
+        const change = await applyCommandsNow(res.buildCommands);
+        if (change.changed || !res.cloud) {
+          await report(change);
           return;
         }
         say("That's trickier than it looked, so I'm asking the advanced AI to plan it.");
@@ -216,9 +236,9 @@ export const ChatSidebar = ({ onBuildCommands, activePlanIndex, sceneData, backg
       for (let attempt = 0; attempt < 2 && !done; attempt++) {
         const res = await post(step.instruction, 'step');
         if (stale() || res.aborted) return;
-        if (res.buildCommands?.length) ({ changed: done, notes } = await applyNow(res.buildCommands));
+        if (res.buildCommands?.length) ({ changed: done, notes } = await applyCommandsNow(res.buildCommands));
       }
-      if (!done && step.command) ({ changed: done, notes } = await applyNow([step.command]));
+      if (!done && step.command) ({ changed: done, notes } = await applyCommandsNow([step.command]));
       if (stale()) return;
       if (done) stepsDoneRef.current++;
       else {

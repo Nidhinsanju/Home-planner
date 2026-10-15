@@ -39,7 +39,9 @@ export async function loadBackgroundImage(file: File): Promise<{ src: string; as
   }
 }
 
-// A smaller copy of a background image for the vision model (faster to read), with its size.
-export async function shrinkForVision(src: string, maxSide = 1024) {
-  return toJpeg(await loadImage(src), maxSide);
+// Pixel size of a background image. The vision model gets the image exactly as stored (up to
+// 2000 px on the long side, see loadBackgroundImage): small text like 9' 11" must stay legible.
+export async function imageSize(src: string) {
+  const img = await loadImage(src);
+  return { width: img.naturalWidth, height: img.naturalHeight };
 }

@@ -1,13 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { CloudUsage, connectToDatabase } from './db';
-import { cloudPlanImagePrompt, cloudPlannerSystem, cloudPlannerUser } from './aiPrompt';
+import { cloudPlannerSystem, cloudPlannerUser } from './aiPrompt';
 
-// The cloud model (Claude) does only the hard work: reading uploaded drawings and planning
-// complex changes. Everything else stays on the local model. Calls are kept small (no chat
-// history beyond a few lines, JSON-only answers) and limited per user per day.
+// The optional planner model (Claude, off by default) plans complex changes as steps for the
+// chat model to carry out. Calls are kept small (no chat history beyond a few lines,
+// JSON-only answers) and limited per user per day.
 
-export const cloudEnabled = () => !!process.env.ANTHROPIC_API_KEY;
+// Claude is reached directly (ANTHROPIC_API_KEY) or through OpenRouter (OPENROUTER_API_KEY).
+const viaOpenRouter = () => !process.env.ANTHROPIC_API_KEY && !!process.env.OPENROUTER_API_KEY;
+export const cloudEnabled = () => !!process.env.ANTHROPIC_API_KEY || !!process.env.OPENROUTER_API_KEY;
 const CLOUD_MODEL = () => process.env.CLOUD_MODEL || 'claude-opus-5-5';
+const OPENROUTER_MODEL = () => process.env.OPENROUTER_MODEL || 'anthropic/claude-opus-5.5';
 const DAILY_LIMIT = () => Number(process.env.CLOUD_DAILY_LIMIT || 10);
 const EFFORT = () => (process.env.CLOUD_EFFORT || 'medium') as 'low' | 'medium' | 'high';
 
@@ -31,8 +35,9 @@ export type CloudResult<T> = { data: T } | { error: string } | { aborted: true }
 
 // One JSON-only request. `schema` constrains the answer, so it always parses.
 async function askClaude<T>(userId: unknown, system: string | undefined, content: Anthropic.Beta.BetaContentBlockParam[], schema: Record<string, unknown>, signal?: AbortSignal): Promise<CloudResult<T>> {
-  if (!cloudEnabled()) return { error: 'The advanced AI is not set up (no ANTHROPIC_API_KEY).' };
+  if (!cloudEnabled()) return { error: 'The advanced AI is not set up (no ANTHROPIC_API_KEY or OPENROUTER_API_KEY).' };
   if ((await cloudCallsLeft(userId)) <= 0) return { error: `You've used today's ${DAILY_LIMIT()} advanced AI requests. The local AI is still available.` };
+  if (viaOpenRouter()) return askOpenRouter<T>(userId, system, content, schema, signal);
 
   const client = new Anthropic();
   try {
@@ -62,40 +67,39 @@ async function askClaude<T>(userId: unknown, system: string | undefined, content
   }
 }
 
-const ROOM_TYPES = ['living', 'bed', 'kitchen', 'dining', 'toilet', 'pooja', 'study', 'utility', 'store', 'staircase', 'parking', 'balcony', 'hallway'];
-
-const drawingSchema = {
-  type: 'object',
-  properties: {
-    summary: { type: 'string' },
-    rooms: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          type: { type: 'string', enum: ROOM_TYPES },
-          box: { type: 'array', items: { type: 'number' } },
-        },
-        required: ['name', 'type', 'box'],
-        additionalProperties: false,
+// The same request through OpenRouter's OpenAI-compatible API.
+async function askOpenRouter<T>(userId: unknown, system: string | undefined, content: Anthropic.Beta.BetaContentBlockParam[], schema: Record<string, unknown>, signal?: AbortSignal): Promise<CloudResult<T>> {
+  const client = new OpenAI({ baseURL: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY });
+  const parts = content.map(b => {
+    if (b.type === 'image' && b.source.type === 'base64') return { type: 'image_url' as const, image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } };
+    return { type: 'text' as const, text: b.type === 'text' ? b.text : '' };
+  });
+  try {
+    const response = await client.chat.completions.create(
+      {
+        model: OPENROUTER_MODEL(),
+        max_tokens: 16000,
+        response_format: { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema } },
+        messages: [...(system ? [{ role: 'system' as const, content: system }] : []), { role: 'user' as const, content: parts }],
+        // OpenRouter-only field: Claude's reasoning effort.
+        ...({ reasoning: { effort: EFFORT() } } as object),
       },
-    },
-  },
-  required: ['summary', 'rooms'],
-  additionalProperties: false,
-};
-
-export type CloudDrawing = { summary: string; rooms: { name: string; type: string; box: number[] }[] };
-
-// Reads an uploaded floor plan (a JPEG/PNG/WebP data URL, w x h pixels).
-export function readDrawing(userId: unknown, image: string, w: number, h: number, signal?: AbortSignal) {
-  const [, mediaType, data] = image.match(/^data:(image\/(?:png|jpeg|webp));base64,(.*)$/) ?? [];
-  if (!data) return Promise.resolve({ error: 'Invalid image.' } as CloudResult<CloudDrawing>);
-  return askClaude<CloudDrawing>(userId, undefined, [
-    { type: 'image', source: { type: 'base64', media_type: mediaType as 'image/png' | 'image/jpeg' | 'image/webp', data } },
-    { type: 'text', text: cloudPlanImagePrompt(w, h) },
-  ], drawingSchema, signal);
+      { signal },
+    );
+    await recordUsage(userId, { input_tokens: response.usage?.prompt_tokens ?? 0, output_tokens: response.usage?.completion_tokens ?? 0 });
+    const choice = response.choices[0];
+    if (choice?.finish_reason === 'content_filter') return { error: 'The advanced AI declined this request.' };
+    if (choice?.finish_reason === 'length') return { error: 'The advanced AI ran out of room for its answer. Try a smaller request.' };
+    const text = (choice?.message.content ?? '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+    return { data: JSON.parse(text) as T };
+  } catch (error) {
+    if (signal?.aborted) return { aborted: true };
+    console.error('OpenRouter error:', error);
+    if (error instanceof OpenAI.AuthenticationError) return { error: 'The advanced AI key is invalid.' };
+    if (error instanceof OpenAI.RateLimitError) return { error: 'The advanced AI is busy. Try again in a minute.' };
+    if (error instanceof OpenAI.APIError && error.status === 402) return { error: 'The advanced AI account is out of credit.' };
+    return { error: 'Could not reach the advanced AI.' };
+  }
 }
 
 const planSchema = {

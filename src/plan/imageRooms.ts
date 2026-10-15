@@ -40,17 +40,3 @@ export function imageRoomBounds(bg: Background) {
     .map(r => ({ ...r, minX: snapX(r.minX), maxX: snapX(r.maxX), minY: snapY(r.minY), maxY: snapY(r.maxY) }))
     .filter(r => r.maxX - r.minX >= 2 && r.maxY - r.minY >= 2);
 }
-
-// AI build commands (see commands.ts) that draw every room found on the image.
-export function imageRoomCommands(bg: Background) {
-  return imageRoomBounds(bg).map(r => ({
-    action: 'build',
-    type: 'room',
-    name: r.name,
-    roomType: r.type,
-    x: (r.minX + r.maxX) / 2,
-    y: (r.minY + r.maxY) / 2,
-    width: r.maxX - r.minX,
-    depth: r.maxY - r.minY,
-  }));
-}

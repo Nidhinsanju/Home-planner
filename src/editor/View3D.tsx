@@ -48,7 +48,7 @@ export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Prop
           onClick={e => { if (!isClick(e)) return; e.stopPropagation(); onSelect({ kind: 'room', id: r.id }); }} />
       ))}
 
-      {plan.walls.map(w => (
+      {plan.walls.filter(w => !w.divider).map(w => (
         <WallMesh key={w.id} plan={plan} wall={w} openings={plan.openings.filter(o => o.wallId === w.id)} cutaway={cutaway}
           selected={isSel('wall', w.id)} selectedOpening={selection?.kind === 'opening' ? selection.id : undefined}
           onSelect={onSelect} />

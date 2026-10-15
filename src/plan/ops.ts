@@ -88,7 +88,7 @@ export function cornerAt(plan: Plan, p: Vec, tol = TOL): { plan: Plan; cornerId:
 // Adds a straight wall from p to q, connecting it into the existing wall graph: it joins
 // corners it touches, splits walls it crosses or ends on, and doesn't duplicate walls it
 // overlaps.
-export function addWall(plan: Plan, p: Vec, q: Vec, dims: { thickness: number; height: number } = WALL_DEFAULTS) {
+export function addWall(plan: Plan, p: Vec, q: Vec, dims: { thickness: number; height: number; divider?: boolean } = WALL_DEFAULTS) {
   if (dist(p, q) < TOL) return { plan, wallIds: [] as string[] };
   const cuts: Vec[] = [p, q];
   for (const w of plan.walls) {
@@ -217,8 +217,11 @@ export function setWallLength(plan: Plan, wallId: string, length: number): Plan 
   return moveCorner(plan, wall.b, { x: a.x + (d.x / l) * length, y: a.y + (d.y / l) * length });
 }
 
-export function updateWall(plan: Plan, wallId: string, data: Partial<Pick<Wall, 'thickness' | 'height'>>): Plan {
-  return { ...plan, walls: plan.walls.map(w => (w.id === wallId ? { ...w, ...data } : w)) };
+export function updateWall(plan: Plan, wallId: string, data: Partial<Pick<Wall, 'thickness' | 'height' | 'divider'>>): Plan {
+  const walls = plan.walls.map(w => (w.id === wallId ? { ...w, ...data } : w));
+  // A divider holds no doors or windows.
+  const openings = data.divider ? plan.openings.filter(o => o.wallId !== wallId) : plan.openings;
+  return { ...plan, walls, openings };
 }
 
 const dropOrphanCorners = (plan: Plan): Plan => {
@@ -239,7 +242,7 @@ export function deleteWalls(plan: Plan, wallIds: string[]): Plan {
 
 export function addOpening(plan: Plan, wallId: string, at: Vec, kind: 'door' | 'window', size?: Partial<Opening>): Plan {
   const wall = plan.walls.find(w => w.id === wallId);
-  if (!wall) return plan;
+  if (!wall || wall.divider) return plan;
   const { a, b } = wallEnds(plan, wall);
   const o: Opening = { id: newId(kind), wallId, kind, t: 0.5, ...(kind === 'door' ? DOOR_DEFAULTS : WINDOW_DEFAULTS), ...size };
   o.t = clampOpeningT(plan, o, projectT(at, a, b));

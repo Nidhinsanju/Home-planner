@@ -1,27 +1,28 @@
 import { createHash } from 'node:crypto';
-import OpenAI from 'openai';
 import { getUserByToken, isPlanId } from './session';
 import type { ImageRoom } from '../plan/types';
-import { planImagePrompt } from './aiPrompt';
+import { ExtractionSchema, toPixelSpace, type Extraction } from '../plan/extraction';
+import { formatIssues } from '../plan/setPlan';
+import { EXTRACTION_VERSION, extractionPrompt } from './aiPrompt';
 import { ImageRead } from './db';
-import { cloudCallsLeft, cloudEnabled, readDrawing } from './cloudAI';
+import { aiClient, aiErrorMessage, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, reasoningField, TryNextModel, withModels } from './aiClient';
 
-// Reads an uploaded floor-plan image and returns a short description plus the rooms it can
-// see, as boxes in fractions of the image. This is how the chat model learns what the drawing
-// shows. The cloud model (Claude) reads it when set up, as it copes with rough hand-drawn
-// sketches; otherwise, or when today's cloud limit is used up, the local vision model (Ollama)
-// does. Results are cached per image, so the same image is never read (or billed) twice.
+// Step A of building from a drawing: the vision model reads an uploaded floor plan, at the
+// size it was uploaded (up to 2000 px), into JSON: every room with its written size and pixel
+// box, the doors, windows and entry (see src/plan/extraction.ts). Step B, turning that into a
+// plan in feet, is done in code (src/plan/fromExtraction.ts).
+// Each model in AI_MODELS is tried in turn (see aiClient.ts). Reads are cached per image and
+// prompt version; `force` reads again anyway.
 
 export type PlanImageResult =
-  | { success: true; summary: string; rooms: ImageRoom[] }
+  | { success: true; summary: string; rooms: ImageRoom[]; extraction: Extraction; imageWidth: number; imageHeight: number; model: string }
   | { error: string }
   | { aborted: true };
 
-const VISION_MODEL = () => process.env.AI_VISION_MODEL || 'qwen2.5vl:3b';
-
+const MAX_RETRIES = 2;
 
 // The first {...} block in the reply, parsed.
-function extractJson(text: string): any {
+function extractJson(text: string): unknown {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start === -1 || end <= start) return null;
@@ -32,87 +33,92 @@ function extractJson(text: string): any {
   }
 }
 
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+// Room boxes as fractions of the image, the older summary form the chat and the card use.
+const toImageRooms = (ex: Extraction, w: number, h: number): ImageRoom[] => ex.rooms.map(r => {
+  const [x1, y1, x2, y2] = r.approxBoxPx;
+  const c = (v: number, s: number) => Math.min(1, Math.max(0, v / s));
+  return { name: r.name, type: r.type, box: [c(Math.min(x1, x2), w), c(Math.min(y1, y2), h), c(Math.max(x1, x2), w), c(Math.max(y1, y2), h)] };
+});
 
-// Normalises a box to fractions of the image. Models sometimes answer in fractions already.
-function toBox(b: unknown, w: number, h: number): ImageRoom['box'] | null {
-  if (!Array.isArray(b) || b.length !== 4 || !b.every(v => Number.isFinite(Number(v)))) return null;
-  let [x1, y1, x2, y2] = b.map(Number);
-  if (Math.max(x1, y1, x2, y2) > 1.5) {
-    x1 /= w; x2 /= w; y1 /= h; y2 /= h;
-  }
-  const box: ImageRoom['box'] = [clamp01(Math.min(x1, x2)), clamp01(Math.min(y1, y2)), clamp01(Math.max(x1, x2)), clamp01(Math.max(y1, y2))];
-  return box[2] - box[0] > 0.02 && box[3] - box[1] > 0.02 ? box : null;
-}
-
-// Turns a model's {summary, rooms} answer into a result.
-function toResult(data: any, w: number, h: number): PlanImageResult {
-  const rooms: ImageRoom[] = (Array.isArray(data?.rooms) ? data.rooms : [])
-    .slice(0, 40)
-    .map((r: any) => ({ name: String(r?.name ?? '').slice(0, 60), type: String(r?.type ?? '').toLowerCase().slice(0, 20), box: toBox(r?.box, w, h) }))
-    .filter((r: any): r is ImageRoom => !!r.box);
-  const summary = String(data?.summary ?? '').trim().slice(0, 1000);
-  return { success: true, summary: summary || `I can see ${rooms.length} rooms.`, rooms };
-}
-
-export async function readPlanImage(token: string, planId: string, image: string, w: number, h: number, signal?: AbortSignal): Promise<PlanImageResult> {
+export async function readPlanImage(token: string, planId: string, image: string, w: number, h: number, signal?: AbortSignal, force = false): Promise<PlanImageResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
   if (!/^data:image\/(png|jpeg|webp);base64,/.test(image)) return { error: 'Invalid image.' };
   const user = await getUserByToken(token);
   if (!user) return { error: 'Your session has expired. Please log in again.' };
 
-  const hash = createHash('sha256').update(image).digest('hex');
-  const cached = await ImageRead.findOne({ userId: user._id, hash }).lean() as any;
-  if (cached) return { success: true, summary: cached.summary, rooms: cached.rooms };
-
-  let result: PlanImageResult | null = null;
-  if (cloudEnabled() && (await cloudCallsLeft(user._id)) > 0) {
-    const res = await readDrawing(user._id, image, w, h, signal);
-    if ('aborted' in res) return res;
-    if ('data' in res) result = toResult(res.data, w, h);
-    else console.error('Cloud drawing read failed, using the local model:', res.error);
+  const info = imageInfo(image);
+  const width = info.width ?? w, height = info.height ?? h;
+  const hash = createHash('sha256').update(image).update(`|${EXTRACTION_VERSION}`).digest('hex');
+  if (!force) {
+    const cached = await ImageRead.findOne({ userId: user._id, hash }).lean() as any;
+    if (cached?.extraction) {
+      console.info(`[ai] read-plan cache hit (read by ${cached.model}) ${width}x${height}px`);
+      // Older cached readings may still be on a 0-1000 scale.
+      const extraction = toPixelSpace(cached.extraction, cached.imageWidth, cached.imageHeight);
+      return { success: true, summary: cached.summary, rooms: toImageRooms(extraction, cached.imageWidth, cached.imageHeight), extraction, imageWidth: cached.imageWidth, imageHeight: cached.imageHeight, model: cached.model };
+    }
   }
-  if (!result) result = await readLocally(image, w, h, signal);
-  if ('success' in result && result.rooms.length > 0) {
-    const { summary, rooms } = result;
-    await ImageRead.updateOne({ userId: user._id, hash }, { $set: { summary, rooms } }, { upsert: true }).catch(() => {});
+
+  const result = await extract(image, width, height, info, signal);
+  if ('success' in result) {
+    const { summary, rooms, extraction, model } = result;
+    await ImageRead.updateOne({ userId: user._id, hash }, { $set: { model, summary, rooms, extraction, imageWidth: width, imageHeight: height } }, { upsert: true }).catch(() => {});
   }
   return result;
 }
 
-// The local vision model (Ollama, OpenAI-compatible API).
-async function readLocally(image: string, w: number, h: number, signal?: AbortSignal): Promise<PlanImageResult> {
-  const client = new OpenAI({
-    baseURL: process.env.AI_BASE_URL || 'http://localhost:11434/v1',
-    apiKey: process.env.AI_API_KEY || 'ollama',
-  });
-
+async function extract(image: string, width: number, height: number, info: ReturnType<typeof imageInfo>, signal?: AbortSignal): Promise<PlanImageResult> {
   try {
-    const response = await client.chat.completions.create(
+    return (await withModels('read-plan', model => extractWith(model, image, width, height, info, signal), signal)).result;
+  } catch (error: any) {
+    if (signal?.aborted) return { aborted: true };
+    console.error('[ai] read-plan error:', error?.status, error?.message);
+    return { error: aiErrorMessage(error) };
+  }
+}
+
+// One model's attempt, with up to MAX_RETRIES corrections. Throws (so the next model is
+// tried) on provider errors, or TryNextModel when its answers stay unusable.
+async function extractWith(model: string, image: string, width: number, height: number, info: ReturnType<typeof imageInfo>, signal?: AbortSignal): Promise<PlanImageResult> {
+  const maxTokens = EXTRACT_MAX_TOKENS();
+  const reasoning = EXTRACT_REASONING();
+  const messages: any[] = [{
+    role: 'user',
+    content: [
+      { type: 'image_url', image_url: { url: image } },
+      { type: 'text', text: extractionPrompt(width, height) },
+    ],
+  }];
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const response = await aiClient().chat.completions.create(
       {
-        model: VISION_MODEL(),
-        temperature: 0.1,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: image } },
-            { type: 'text', text: planImagePrompt(w, h) },
-          ],
-        }],
+        model,
+        max_tokens: maxTokens,
+        messages,
+        ...(reasoning !== 'off' ? (reasoningField(reasoning) as object) : { temperature: 0 }),
       },
       { signal },
     );
     if (signal?.aborted) return { aborted: true };
+    logAiCall(`read-plan#${attempt + 1}`, model, response, info);
 
-    const data = extractJson(response.choices[0].message.content || '');
-    if (!data) return { error: "I couldn't make sense of that drawing. Try a clearer image, or trace it by hand." };
-    return toResult(data, w, h);
-  } catch (error: any) {
-    if (signal?.aborted) return { aborted: true };
-    console.error('Vision model error:', error);
-    if (error?.status === 404 || /not found/i.test(String(error?.message))) {
-      return { error: `The vision model "${VISION_MODEL()}" isn't installed. Run: ollama pull ${VISION_MODEL()}` };
+    const choice = response.choices[0];
+    if (choice?.finish_reason === 'length') {
+      return { error: `The AI's answer was cut off at ${maxTokens} tokens before the plan was complete. Raise EXTRACT_MAX_TOKENS in .env.` };
     }
-    return { error: 'Could not reach the AI to read the image. Is Ollama running?' };
+    const text = choice?.message.content ?? '';
+    const raw = extractJson(text);
+    const parsed = raw ? ExtractionSchema.safeParse(raw) : null;
+    if (parsed?.success) {
+      const extraction = toPixelSpace(parsed.data, width, height);
+      return { success: true, summary: extraction.summary || `I can see ${extraction.rooms.length} rooms.`, rooms: toImageRooms(extraction, width, height), extraction, imageWidth: width, imageHeight: height, model };
+    }
+    const problems = parsed ? formatIssues(parsed.error) : ['the reply was not valid JSON'];
+    console.warn(`[ai] read-plan#${attempt + 1}: invalid answer: ${problems.join('; ')}`);
+    if (attempt === MAX_RETRIES) throw new TryNextModel(`The AI couldn't read the drawing into a usable plan (${problems.slice(0, 3).join('; ')}). Try Re-read, or a clearer image.`);
+    messages.push({ role: 'assistant', content: text || '(empty)' });
+    messages.push({ role: 'user', content: `That answer is not valid: ${problems.join('; ')}. Reply with the corrected, complete JSON only.` });
   }
+  throw new TryNextModel('The AI could not read the drawing.');
 }

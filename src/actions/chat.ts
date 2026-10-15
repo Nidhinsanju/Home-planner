@@ -35,3 +35,22 @@ export async function clearChatHistory(token: string, planId: string) {
     return { success: false, error: 'Failed to clear chat' };
   }
 }
+
+// Saves a turn that changed the plan, with the reply describing what was actually applied.
+// The browser calls this after applying the AI's changes (see runChat).
+export async function saveChatTurn(token: string, planId: string, prompt: string, reply: string) {
+  if (!token || !isPlanId(planId)) return { success: false };
+  try {
+    const user = await getUserByToken(token);
+    if (!user) return { success: false };
+    await connectToDatabase();
+    await ChatHistory.updateOne(
+      { userId: user._id, planId },
+      { $push: { messages: { $each: [{ role: 'user', content: String(prompt).slice(0, 4000) }, { role: 'assistant', content: String(reply).slice(0, 4000) }] } } },
+      { upsert: true },
+    );
+    return { success: true };
+  } catch {
+    return { success: false };
+  }
+}

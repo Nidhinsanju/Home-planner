@@ -11,7 +11,7 @@ You are the AI assistant of a home planning and Vastu app. You help the user des
 1. TALK: answer questions and give advice about layout, room sizes and Vastu. Reply in plain, friendly text.
 2. BUILD: change the plan (rooms, walls, doors, windows, furniture) by replying with JSON commands. The app applies them.
 3. SEE THE UPLOADED DRAWING: ${hasImage
-  ? 'the user has uploaded a floor-plan image. What it shows is in CURRENT PLAN under "referenceDrawing" (the image itself may also be attached to their latest message). Use it to describe the layout, answer questions about it ("how many bedrooms?", "where is the kitchen?"), compare it with CURRENT PLAN, suggest Vastu improvements, or build from it when asked.'
+  ? 'the user has uploaded a floor-plan image; it is attached to their latest message, and what was read from it (rooms, written sizes, positions in feet) is in CURRENT PLAN under "referenceDrawing". Use it to describe the layout, answer questions about it ("how many bedrooms?", "where is the kitchen?"), compare it with CURRENT PLAN, suggest Vastu improvements, or build from it when asked.'
   : 'the user can upload a floor-plan image in the Build tab (Background image). None is uploaded now; if they ask about one, tell them how to upload it.'}
 
 HOW TO REPLY:
@@ -31,11 +31,13 @@ CURRENT PLAN:
 ${JSON.stringify(sceneData)}
 To delete, move or update something, copy its "id" EXACTLY from CURRENT PLAN. Never make up an id. In the examples below, ID_FROM_PLAN stands for a real id from the plan.
 
-THE UPLOADED DRAWING: if CURRENT PLAN has "referenceDrawing", those are the rooms found on the uploaded drawing, already measured in plan feet. Whenever the user asks to build ANYTHING "from the drawing / image / plan I uploaded" (the whole house or just one room), ALWAYS use "buildFromDrawing" (the app places the rooms exactly where they are on the drawing). Never type the coordinates yourself for this.
+THE UPLOADED DRAWING: if CURRENT PLAN has "referenceDrawing", those are the rooms read from the uploaded drawing, already measured in plan feet at the drawing's scale. Whenever the user asks to build ANYTHING "from the drawing / image / plan I uploaded" (the whole house or just one room), use "buildFromDrawing": the app builds the rooms, dividers, doors and windows to scale from the drawing, exactly at their written sizes. Never type the coordinates yourself for this. Only if the user says a build from the drawing is wrong, compare the attached image with CURRENT PLAN and either fix the specific rooms with commands, or call set_plan with the corrected complete plan.
 Whole drawing:
 {"action": "buildFromDrawing"}
 Only some rooms (use their names from referenceDrawing):
 {"action": "buildFromDrawing", "rooms": ["Kitchen"]}
+
+A WHOLE NEW PLAN: to design or redraw the complete layout (e.g. "design a 3BHK house", "redo the whole plan"), call the set_plan tool instead of sending commands. It REPLACES the plan. Rooms are polygons in feet along wall centre-lines; rooms that touch share exactly the same edge coordinates; use a wall with divider: true where two rooms are open to each other (e.g. kitchen and living); put doors and windows on walls with "at": [x, y]. For a few changes to the existing plan, use commands, not set_plan.
 
 Available actions: "build", "buildFromDrawing", "delete", "deleteAll", "move", "update".
 Build types: "room", "wall", "door", "window", and furniture: "sofa", "table", "tv", "bed", "wardrobe", "dining", "counter", "toilet", "bench", "plant", "tree", "car".
@@ -108,20 +110,37 @@ Return ONLY JSON, no other text, in exactly this shape:
 - If sizes are written on the plan (e.g. 12'x10'), mention them in the summary.
 `;
 
-// ---- Cloud (Claude) prompts. The cloud model does only the hard parts: reading drawings and
-// planning complex changes. Its plans are carried out step by step by the local model.
+// Step A of building from a drawing: read every space on the floor plan as JSON (validated by
+// ExtractionSchema in src/plan/extraction.ts). Bump EXTRACTION_VERSION when this changes, so
+// cached reads made with the old prompt are not reused.
+export const EXTRACTION_VERSION = 'extract-v1';
+export const extractionPrompt = (w: number, h: number) => `
+This image is an architectural floor plan, ${w} x ${h} pixels. Read it precisely; the result is used to rebuild the plan to scale.
 
-// Reading an uploaded floor plan, which may be a rough hand-drawn sketch.
-export const cloudPlanImagePrompt = (w: number, h: number) => `
-This image (${w} x ${h} pixels) is a floor plan of a house. It may be a CAD drawing, a scan, or a rough hand-drawn sketch photographed on paper: lines can be wobbly or broken, walls can have gaps, rooms may be only roughly rectangular, and labels and sizes may be handwritten.
+Return ONLY JSON (no prose, no code fence) in exactly this shape:
+{
+  "summary": "one or two sentences about the layout",
+  "rooms": [{"name": "Bedroom 1", "type": "bed", "label": "12' 0\\" x 9' 11\\"", "labeledWidthFt": 12, "labeledDepthFt": 9.92, "approxBoxPx": [x1, y1, x2, y2], "polygonPx": null, "connectsTo": ["Hallway"], "openTo": []}],
+  "doors": [{"between": ["Bedroom 1", "Hallway"], "approxPx": [x, y]}],
+  "windows": [{"room": "Bedroom 1", "wallSide": "north", "approxPx": [x, y]}],
+  "entry": {"approxPx": [x, y]}
+}
 
-Identify every room or space. For each, give:
-- "name": the label written on the plan (read handwriting carefully), otherwise a sensible name.
-- "type": one of living, bed, kitchen, dining, toilet, pooja, study, utility, store, staircase, parking, balcony, hallway.
-- "box": [x1, y1, x2, y2] in PIXELS of this image, the room's rectangle inside its walls (top-left, bottom-right). Neighbouring rooms that share a wall should share that edge coordinate.
-
-"summary": one or two sentences describing the layout. Mention any sizes written on the plan (e.g. 12'x10') and which way north is if marked.
+RULES
+- List EVERY enclosed space, including small ones: walk-in closets, closets, laundry, mech, pantry, hallway, balcony, each bath. Give repeated names a number (Bedroom 1, Bedroom 2, Walk-in Closet 1...).
+- "type": one of living, bed, kitchen, dining, toilet, pooja, study, utility, store, staircase, parking, balcony, hallway (closets = store, laundry and mech = utility, bath = toilet).
+- "label": the size text written in the room, copied exactly (e.g. 16' 7" x 17' 5"), or null if none. "labeledWidthFt"/"labeledDepthFt": the same two numbers in decimal feet, in the order written, or null. Written sizes are the ground truth.
+- "approxBoxPx": [left, top, right, bottom] in PIXELS of this image, measured to the INSIDE faces of the walls around the room. Be careful and precise: rooms that share a wall must have edges one wall-thickness apart, and boxes must not overlap.
+- "polygonPx": only for a room that is not a rectangle (diagonal or L-shaped walls): its inside corners in order, [[x, y], ...]. Otherwise null.
+- "openTo": rooms this one opens into with NO wall between them (e.g. an open kitchen and living room). Do not list rooms joined by a door.
+- "connectsTo": rooms reachable from this one through a door or opening.
+- "doors": every door (swing arc or gap in a wall), with the two spaces it joins ("outside" for an exterior door) and the pixel point of its centre on the wall.
+- "windows": every window (thin double/triple line in an outer wall), with its room, which side of the room (north = top of the image) and its centre point.
+- "entry": the main entrance door's centre point, or null if unclear.
 `;
+
+// ---- Planner (Claude) prompts, used only when the optional planner is enabled (cloudAI.ts).
+// Its plans are carried out step by step by the chat model.
 
 // Planning a complex request. The steps are carried out one at a time by a small local model,
 // so each must be one simple change it can turn into a single JSON command.

@@ -2,6 +2,7 @@
 
 import { connectToDatabase, Build, BuildData } from '../lib/db';
 import { getUserByToken, isPlanId } from '../lib/session';
+import { ExtractionSchema } from '../plan/extraction';
 
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 const MAX_BACKGROUND_CHARS = 6_000_000; // ~4.5 MB image; the browser resizes uploads well below this
@@ -27,10 +28,18 @@ function background(b: any) {
 // What the vision model read from the image: a summary and room boxes in image fractions.
 function analysis(a: any) {
   if (!a || typeof a.summary !== 'string') return undefined;
-  const rooms = arr(a.rooms).slice(0, 40)
+  const rooms = arr(a.rooms).slice(0, 60)
     .filter((r: any) => Array.isArray(r?.box) && r.box.length === 4 && r.box.every((v: unknown) => Number.isFinite(Number(v))))
     .map((r: any) => ({ name: String(r.name ?? '').slice(0, 60), type: String(r.type ?? '').slice(0, 20), box: r.box.map((v: unknown) => Math.min(1, Math.max(0, Number(v)))) }));
-  return { summary: a.summary.slice(0, 1000), rooms };
+  // The full reading, kept only when it is well-formed (it rebuilds the plan to scale).
+  const extraction = ExtractionSchema.safeParse(a.extraction);
+  const size = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 && Number(v) <= 10000 ? Number(v) : undefined);
+  const imageWidth = size(a.imageWidth), imageHeight = size(a.imageHeight);
+  return {
+    summary: a.summary.slice(0, 1000),
+    rooms,
+    ...(extraction.success && imageWidth && imageHeight ? { extraction: extraction.data, imageWidth, imageHeight } : {}),
+  };
 }
 
 export async function saveBuild(planId: 'p1' | 'p2', buildData: BuildData, token: string) {

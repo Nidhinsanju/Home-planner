@@ -17,6 +17,6 @@ export async function POST(request: Request) {
   const w = Number(body?.width), h = Number(body?.height);
   if (typeof body?.image !== 'string' || !(w > 0) || !(h > 0)) return Response.json({ error: 'Invalid request' }, { status: 400 });
 
-  const result = await readPlanImage(token, String(body.planId ?? ''), body.image, w, h, request.signal);
+  const result = await readPlanImage(token, String(body.planId ?? ''), body.image, w, h, request.signal, body.force === true);
   return Response.json(result);
 }

@@ -83,13 +83,18 @@ const chatHistorySchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
-// What the cloud model read from an uploaded image, keyed by a hash of the image, so the same
-// image is never sent (and billed) twice.
+// What the vision model read from an uploaded image, keyed by a hash of the image, the model
+// and the prompt version, so the same image is never read (and billed) twice by the same
+// model, but is read again when either changes.
 const imageReadSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   hash: { type: String, required: true },
+  model: { type: String, default: '' },
   summary: { type: String, default: '' },
   rooms: { type: Array, default: [] },
+  extraction: { type: mongoose.Schema.Types.Mixed },
+  imageWidth: { type: Number },
+  imageHeight: { type: Number },
 }, { timestamps: true });
 imageReadSchema.index({ userId: 1, hash: 1 }, { unique: true });
 

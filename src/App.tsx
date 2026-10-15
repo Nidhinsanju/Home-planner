@@ -10,12 +10,15 @@ import { DPad } from './DPad';
 import { Editor2D, Selection, Tool } from './editor/Editor2D';
 import { View3D } from './editor/View3D';
 import { Sidebar } from './editor/Sidebar';
-import { Background, Plan, WALL_DEFAULTS } from './plan/types';
+import { Background, emptyPlan, Plan, WALL_DEFAULTS } from './plan/types';
 import { detectRooms, detectSpaces, roomAt } from './plan/rooms';
 import * as ops from './plan/ops';
-import { imageRoomCommands } from './plan/imageRooms';
 import { examplePlan, planFromBuild } from './plan/migrate';
 import { applyCommands, BuildCommand, describePlan } from './plan/commands';
+import { applySetPlan, describeCounts, type SetPlanPayload } from './plan/setPlan';
+import { buildFromDrawing, describeLayout } from './plan/buildDrawing';
+import { describeChange } from './plan/summary';
+import type { AiChange } from './UI';
 import { DisplayUnit } from './units';
 import './index.css';
 
@@ -122,6 +125,19 @@ function App({ initialUser }: any) {
     if (res.error) alert(res.error);
   };
 
+  // Empties the current plan (walls, rooms, furniture and background image) and saves it.
+  // Kept as one undo step, so Undo + Save brings it back.
+  const handleRemovePlan = async () => {
+    if (readOnly) return;
+    if (!window.confirm(`Remove Plan ${activePlanIndex + 1}? Everything on it, including the background image, will be deleted and saved. You can still Undo until you leave the page.`)) return;
+    const next = commit(emptyPlan());
+    setSelection(null);
+    setTool('select');
+    if (!next) return;
+    const res = await persist(next);
+    if (res.error) alert(res.error);
+  };
+
   const handleSwitchPlan = (i: 0 | 1 | 2) => {
     setActivePlanIndex(i);
     setSelection(null);
@@ -157,13 +173,22 @@ function App({ initialUser }: any) {
   const sceneData = useMemo(() => describePlan(plan), [plan]);
 
   // Applies AI commands as one undo step and saves the result. Returns whether the plan
-  // changed, and notes for the chat.
-  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<{ changed: boolean; notes: string[] }> => {
-    if (readOnly) return { changed: false, notes: ['The example plan is read-only.'] };
+  // changed, what changed (in words, from comparing the plans) and notes for the chat.
+  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<AiChange> => {
+    if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
     const { plan: next, errors } = applyCommands(plan, cmds);
-    const changed = next !== plan;
+    const { changed, text } = describeChange(plan, next);
     if (changed) errors.push(...(await commitAndSave(next)));
-    return { changed, notes: errors };
+    return { changed, summary: text, notes: errors };
+  };
+
+  // Replaces the plan with one from the AI's set_plan tool, as one undo step.
+  const handleSetPlan = async (payload: SetPlanPayload): Promise<AiChange> => {
+    if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
+    const res = applySetPlan(plan, payload, { replace: true });
+    const { changed } = describeChange(plan, res.plan);
+    const notes = changed ? await commitAndSave(res.plan) : [];
+    return { changed, summary: changed ? `Replaced the plan: ${describeCounts(res.applied)}.` : 'Nothing on the plan changed.', notes: [...res.errors, ...notes] };
   };
 
   // Commits an AI-made change as one undo step and saves it. Returns notes for the chat.
@@ -183,13 +208,21 @@ function App({ initialUser }: any) {
   };
 
   // The user chose what to do with the image: build its rooms, or keep it as reference.
-  const handleImageChoice = async (use: 'build' | 'context'): Promise<{ built: number; notes: string[] }> => {
+  const handleImageChoice = async (use: 'build' | 'context'): Promise<{ message: string; notes: string[] }> => {
     const bg = plan.background;
-    if (readOnly || !bg) return { built: 0, notes: [] };
-    if (use === 'context') return { built: 0, notes: await commitAndSave(ops.updateBackground(plan, { use })) };
-    const cmds = imageRoomCommands(bg);
-    const { plan: next, errors } = applyCommands(plan, cmds);
-    return { built: cmds.length - errors.length, notes: [...errors, ...(await commitAndSave(ops.updateBackground(next, { use })))] };
+    if (readOnly || !bg) return { message: '', notes: [] };
+    if (use === 'context') {
+      return { message: 'OK, I\'ll keep your drawing as reference. You can ask things like "build the kitchen from the drawing" or "what rooms are on it?".', notes: await commitAndSave(ops.updateBackground(plan, { use })) };
+    }
+    const built = buildFromDrawing(plan);
+    if (built && 'error' in built) return { message: built.error, notes: [] };
+    if (built) {
+      const notes = await commitAndSave(ops.updateBackground(built.plan, { use }));
+      return { message: `Built ${describeCounts(built.result.applied)} from your drawing. ${describeLayout(built.layout)} Drag walls to fine-tune, or ask me for changes.`, notes: [...built.result.errors, ...notes] };
+    }
+    // Read by the older reader (room boxes only): building from that would put walls in the
+    // wrong places, so nothing is built.
+    return { message: 'This drawing was read by an older reader that doesn\'t give room sizes or positions precisely enough to build from. Press Re-read on the image card, then Build it for me.', notes: [] };
   };
 
   return (
@@ -200,6 +233,7 @@ function App({ initialUser }: any) {
         onRedo={redo} canRedo={current.index < current.history.length - 1}
         unit={unit} setUnit={setUnit}
         onSave={readOnly ? undefined : handleSave} dirty={dirty}
+        onRemovePlan={readOnly ? undefined : handleRemovePlan}
         onLogout={handleLogout}
         username={initialUser?.name}
         cutaway={cutaway} setCutaway={setCutaway}
@@ -236,7 +270,7 @@ function App({ initialUser }: any) {
             </>
           )}
         </div>
-        <ChatSidebar onBuildCommands={handleBuildCommands} activePlanIndex={activePlanIndex} sceneData={sceneData}
+        <ChatSidebar onBuildCommands={handleBuildCommands} onSetPlan={handleSetPlan} activePlanIndex={activePlanIndex} sceneData={sceneData}
           background={readOnly ? undefined : plan.background} onImageRead={handleImageRead} onImageChoice={handleImageChoice} />
       </div>
     </div>
