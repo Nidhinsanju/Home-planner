@@ -103,22 +103,47 @@ export const emptyPlan = (): Plan => ({
 
 // Room types, including the ones that matter for Vastu placement.
 export const ROOM_TYPES: { id: string; name: string; color: string }[] = [
-  { id: 'living', name: 'Living Room', color: '#f6d7b0' },
-  { id: 'bed', name: 'Bedroom', color: '#f8c9c4' },
-  { id: 'kitchen', name: 'Kitchen', color: '#cfe8f3' },
-  { id: 'dining', name: 'Dining', color: '#f3dfa2' },
-  { id: 'toilet', name: 'Toilet / Bath', color: '#d9d4ec' },
-  { id: 'pooja', name: 'Pooja Room', color: '#fbe3a1' },
-  { id: 'study', name: 'Study', color: '#d4ecd0' },
-  { id: 'utility', name: 'Utility', color: '#d5dbe0' },
-  { id: 'store', name: 'Store', color: '#cfc8bd' },
-  { id: 'staircase', name: 'Staircase', color: '#c9c9c9' },
-  { id: 'parking', name: 'Parking', color: '#b9bec4' },
-  { id: 'balcony', name: 'Balcony', color: '#d6efe6' },
-  { id: 'hallway', name: 'Hallway', color: '#efe6c8' },
+  { id: 'living', name: 'Living Room', color: '#fef9c3' },
+  { id: 'bed', name: 'Bedroom', color: '#ffe4e6' },
+  { id: 'kitchen', name: 'Kitchen', color: '#e0f2fe' },
+  { id: 'dining', name: 'Dining', color: '#fef3c7' },
+  { id: 'toilet', name: 'Toilet / Bath', color: '#ede9fe' },
+  { id: 'pooja', name: 'Pooja Room', color: '#fef08a' },
+  { id: 'study', name: 'Study', color: '#dcfce7' },
+  { id: 'utility', name: 'Utility', color: '#ccfbf1' },
+  { id: 'store', name: 'Store', color: '#fef3c7' },
+  { id: 'staircase', name: 'Staircase', color: '#f1f5f9' },
+  { id: 'parking', name: 'Parking', color: '#f1f5f9' },
+  { id: 'balcony', name: 'Balcony', color: '#dcfce7' },
+  { id: 'hallway', name: 'Hallway', color: '#fef9c3' },
 ];
-export const UNNAMED_ROOM_COLOR = '#e9e4da';
+export const UNNAMED_ROOM_COLOR = '#f8fafc';
 export const roomType = (id?: string) => ROOM_TYPES.find(t => t.id === id);
+
+export function getRoomColor(name?: string, type?: string): string {
+  const n = (name || '').toLowerCase();
+  const t = (type || '').toLowerCase();
+  if (n.includes('living') || t === 'living') return '#fef9c3';
+  if (n.includes('kitchen') || t === 'kitchen') return '#e0f2fe';
+  if (n.includes('parking') || n.includes('garage') || t === 'parking') return '#f1f5f9';
+  if (n.includes('bedroom 1') || n === 'bed 1') return '#ffe4e6';
+  if (n.includes('bedroom 2') || n === 'bed 2') return '#ffedd5';
+  if (n.includes('bedroom 3') || n === 'bed 3') return '#ffe4e6';
+  if (n.includes('bed') || t === 'bed') return '#ffe4e6';
+  if (n.includes('walk-in closet 1')) return '#fef08a';
+  if (n.includes('walk-in closet 2')) return '#fed7aa';
+  if (n.includes('walk-in closet 3')) return '#fef08a';
+  if (n.includes('closet 1')) return '#e2e8f0';
+  if (n.includes('closet') || t === 'store') return '#fef3c7';
+  if (n.includes('bath 1') || n.includes('toilet 1')) return '#ede9fe';
+  if (n.includes('bath 2') || n.includes('toilet 2')) return '#e0e7ff';
+  if (n.includes('bath') || n.includes('toilet') || t === 'toilet') return '#ede9fe';
+  if (n.includes('laundry') || t === 'utility') return '#ccfbf1';
+  if (n.includes('mech')) return '#e2e8f0';
+  if (n.includes('balcony') || t === 'balcony') return '#dcfce7';
+  if (n.includes('hallway') || t === 'hallway') return '#fef9c3';
+  return roomType(type)?.color ?? '#f8fafc';
+}
 
 // Maps the words people (and AI models) use for a room to a room type id, or '' if unknown.
 const ROOM_ALIASES: Record<string, string> = {

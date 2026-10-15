@@ -1,12 +1,17 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Item, itemSize, itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall } from '../plan/types';
+import { Item, itemSize, itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall, getRoomColor } from '../plan/types';
 import { FurnitureSymbol } from './FurnitureSymbol';
 import { detectRooms, detectSpaces, Room, roomAt } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
+import { Compass } from '../UI';
+import {
+  MousePointer2, Square, DoorOpen, AppWindow, Box, Type,
+  MoveHorizontal, Trash2, Maximize2, Crosshair, Layers, Lightbulb
+} from 'lucide-react';
 
 export type Tool = 'select' | 'wall' | 'room' | 'door' | 'window' | 'calibrate' | `item:${string}`;
 // 'space' is an area enclosed by walls that hasn't been made a room.
@@ -469,7 +474,9 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
   const hoverWall = (tool === 'door' || tool === 'window') && cursor ? wallUnder(cursor) : null;
   const hoverItem = tool.startsWith('item:') && cursor ? itemSpec(tool.slice(5)) : undefined;
 
-  const lengthLabel = (a: Vec, b: Vec, offset: number, key: string, color = '#3b4048') => {
+  const totalBuiltArea = useMemo(() => shownRooms.reduce((sum, r) => sum + r.area, 0), [shownRooms]);
+
+  const lengthLabel = (a: Vec, b: Vec, offset: number, key: string, color = '#1e293b') => {
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     let ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
     if (ang > 90 || ang < -90) ang += 180;
@@ -477,7 +484,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     const n = { x: -(b.y - a.y) / l, y: (b.x - a.x) / l };
     const p = { x: mid.x + n.x * offset, y: mid.y + n.y * offset };
     return (
-      <text key={key} x={p.x} y={p.y} fontSize={fs * 0.9} fill={color} textAnchor="middle" dominantBaseline="middle"
+      <text key={key} x={p.x} y={p.y} fontSize={fs * 0.85} fontWeight={600} fill={color} textAnchor="middle" dominantBaseline="middle"
         transform={`rotate(${ang} ${p.x} ${p.y})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
         {formatLength(dist(a, b), unit)}
       </text>
@@ -513,7 +520,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         {bg && (
           <g style={{ pointerEvents: 'none' }}>
             <image href={bg.src} x={bg.x} y={bg.y} width={bg.width} height={bg.width * bg.aspect} opacity={bg.opacity} preserveAspectRatio="none" />
-            {!bg.locked && <rect x={bg.x} y={bg.y} width={bg.width} height={bg.width * bg.aspect} fill="none" stroke="#3b82f6" strokeWidth={px(1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />}
+            {!bg.locked && <rect x={bg.x} y={bg.y} width={bg.width} height={bg.width * bg.aspect} fill="none" stroke="#2563eb" strokeWidth={px(1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />}
           </g>
         )}
 
@@ -523,16 +530,16 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           const hov = hover?.kind === 'space' && hover.id === sp.id;
           return (
             <polygon key={sp.key} data-kind="space" data-id={sp.id} points={sp.polygon.map(p => `${p.x},${p.y}`).join(' ')}
-              fill={sel ? 'rgba(59,130,246,0.14)' : hov ? 'rgba(59,130,246,0.06)' : 'transparent'}
-              stroke={sel ? '#3b82f6' : 'none'} strokeWidth={px(2)} strokeDasharray={`${px(6)} ${px(4)}`} />
+              fill={sel ? 'rgba(37,99,235,0.14)' : hov ? 'rgba(37,99,235,0.06)' : 'transparent'}
+              stroke={sel ? '#2563eb' : 'none'} strokeWidth={px(2)} strokeDasharray={`${px(6)} ${px(4)}`} />
           );
         })}
 
         {/* Rooms */}
         {shownRooms.map(r => (
           <polygon key={r.key} data-kind="room" data-id={r.id} points={r.polygon.map(p => `${p.x},${p.y}`).join(' ')}
-            fill={roomType(r.label?.type)?.color ?? UNNAMED_ROOM_COLOR} fillOpacity={bg ? 0.45 : 1}
-            stroke={selRoom?.key === r.key ? '#3b82f6' : 'none'} strokeWidth={px(3)} />
+            fill={getRoomColor(r.label?.name, r.label?.type)} fillOpacity={bg ? 0.6 : 1}
+            stroke={selRoom?.key === r.key ? '#2563eb' : 'none'} strokeWidth={px(3)} />
         ))}
 
         {/* Furniture */}
@@ -545,7 +552,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
             <g key={item.id} data-kind="item" data-id={item.id} transform={`translate(${item.x} ${item.y}) rotate(${(item.rotation * 180) / Math.PI})`} style={{ cursor: readOnly ? 'default' : 'move' }}>
               <title>{spec.name}</title>
               <FurnitureSymbol type={item.type} w={w} d={d} color={spec.color} sw={px(1)} />
-              {hov && <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="#3b82f6" fillOpacity={0.08} stroke="#3b82f6" strokeOpacity={0.5} strokeWidth={px(1)} />}
+              {hov && <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="#2563eb" fillOpacity={0.08} stroke="#2563eb" strokeOpacity={0.5} strokeWidth={px(1)} />}
             </g>
           );
         })}
@@ -559,8 +566,8 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
             <g key={w.id} data-kind="wall" data-id={w.id} style={{ cursor: readOnly ? 'default' : 'move' }}>
               <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={Math.max(w.thickness, px(12))} />
               {w.divider
-                ? <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#8a9199'} strokeWidth={px(sel || hov ? 2.5 : 1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />
-                : <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#3b82f6' : hov ? '#4b5563' : '#23262b'} strokeWidth={Math.max(w.thickness, px(2))} strokeLinecap="square" />}
+                ? <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#2563eb' : hov ? '#475569' : '#94a3b8'} strokeWidth={px(sel || hov ? 2.5 : 1.5)} strokeDasharray={`${px(6)} ${px(4)}`} />
+                : <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={sel ? '#2563eb' : hov ? '#1e293b' : '#000000'} strokeWidth={Math.max(w.thickness, px(2.5))} strokeLinecap="square" />}
             </g>
           );
         })}
@@ -578,11 +585,11 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           const s = o.flip ? -1 : 1;
           return (
             <g key={o.id} data-kind="opening" data-id={o.id} transform={`translate(${c.x} ${c.y}) rotate(${ang})`} style={{ cursor: readOnly ? 'default' : 'ew-resize' }}>
-              <rect x={-w / 2} y={-th / 2} width={w} height={th} fill={o.kind === 'window' ? '#bfe3f5' : '#fafafa'} stroke={sel ? '#3b82f6' : '#23262b'} strokeWidth={px(sel ? 2 : 1)} />
+              <rect x={-w / 2} y={-th / 2} width={w} height={th} fill={o.kind === 'window' ? '#bfe3f5' : '#fafafa'} stroke={sel ? '#2563eb' : '#23262b'} strokeWidth={px(sel ? 2 : 1)} />
               {o.kind === 'window' && <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke="#23262b" strokeWidth={px(1)} />}
               {o.kind === 'door' && (
                 <>
-                  <line x1={-w / 2} y1={0} x2={-w / 2} y2={s * w} stroke={sel ? '#3b82f6' : '#23262b'} strokeWidth={px(1.5)} />
+                  <line x1={-w / 2} y1={0} x2={-w / 2} y2={s * w} stroke={sel ? '#2563eb' : '#23262b'} strokeWidth={px(1.5)} />
                   <path d={`M ${w / 2} 0 A ${w} ${w} 0 0 ${s > 0 ? 1 : 0} ${-w / 2} ${s * w}`} fill="none" stroke="#8a9199" strokeWidth={px(1)} strokeDasharray={`${px(3)} ${px(2)}`} />
                 </>
               )}
@@ -593,10 +600,10 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         {/* Room names */}
         {shownRooms.map(r => (
           <g key={`label-${r.key}`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
-            <text x={r.center.x} y={r.center.y - fs * 0.6} fontSize={fs} fontWeight={600} fill="#2b2f36" textAnchor="middle">
+            <text x={r.center.x} y={r.center.y - fs * 0.45} fontSize={fs * 0.95} fontWeight={700} fill="#0f172a" textAnchor="middle">
               {r.label?.name || roomType(r.label?.type)?.name || 'Room'}
             </text>
-            <text x={r.center.x} y={r.center.y + fs * 0.7} fontSize={fs * 0.85} fill="#5b616b" textAnchor="middle">
+            <text x={r.center.x} y={r.center.y + fs * 0.75} fontSize={fs * 0.8} fontWeight={500} fill="#475569" textAnchor="middle">
               {formatArea(r.area, unit)}
             </text>
           </g>
@@ -618,9 +625,10 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         {!readOnly && tool === 'select' && shown.corners.map(c => {
           const sel = selection?.kind === 'corner' && selection.id === c.id;
           const hov = hover?.kind === 'corner' && hover.id === c.id;
+          const sz = px(sel || hov ? 8 : 6);
           return (
-            <circle key={c.id} data-kind="corner" data-id={c.id} cx={c.x} cy={c.y} r={px(sel || hov ? 6 : 4)}
-              fill={sel ? '#3b82f6' : '#fff'} stroke="#3b82f6" strokeWidth={px(1.5)} style={{ cursor: 'grab' }} />
+            <rect key={c.id} data-kind="corner" data-id={c.id} x={c.x - sz / 2} y={c.y - sz / 2} width={sz} height={sz}
+              fill="#2563eb" stroke="#1e3a8a" strokeWidth={px(1)} style={{ cursor: 'grab' }} />
           );
         })}
 
@@ -634,10 +642,10 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           return (
             <g>
               <g transform={`translate(${item.x} ${item.y}) rotate(${(item.rotation * 180) / Math.PI})`}>
-                <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="none" stroke="#3b82f6" strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
+                <rect x={-w / 2} y={-d / 2} width={w} height={d} fill="none" stroke="#2563eb" strokeWidth={px(1.5)} style={{ pointerEvents: 'none' }} />
                 {!readOnly && HANDLES.map(([sx, sy]) => (
                   <rect key={`${sx},${sy}`} data-handle={`${sx},${sy}`} x={(sx * w) / 2 - hs / 2} y={(sy * d) / 2 - hs / 2} width={hs} height={hs} rx={px(2)}
-                    fill="#fff" stroke="#3b82f6" strokeWidth={px(1.5)} style={{ cursor: handleCursor(sx, sy, item.rotation) }} />
+                    fill="#fff" stroke="#2563eb" strokeWidth={px(1.5)} style={{ cursor: handleCursor(sx, sy, item.rotation) }} />
                 ))}
               </g>
               {lengthLabel(corner(-1, -1), corner(1, -1), -px(14), 'item-w', '#1d4ed8')}
@@ -663,16 +671,16 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
 
         {/* Wall tool preview */}
         {chain.length > 0 && (
-          <polyline points={chain.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#3b82f6" strokeWidth={wallDims.thickness} style={{ pointerEvents: 'none' }} />
+          <polyline points={chain.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#2563eb" strokeWidth={wallDims.thickness} style={{ pointerEvents: 'none' }} />
         )}
         {preview && last && (
           <g style={{ pointerEvents: 'none' }}>
-            <line x1={last.x} y1={last.y} x2={preview.x} y2={preview.y} stroke="#3b82f6" strokeOpacity={0.6} strokeWidth={wallDims.thickness} />
+            <line x1={last.x} y1={last.y} x2={preview.x} y2={preview.y} stroke="#2563eb" strokeOpacity={0.6} strokeWidth={wallDims.thickness} />
             {lengthLabel(last, preview, wallDims.thickness / 2 + px(12), 'preview-dim', '#1d4ed8')}
           </g>
         )}
         {tool === 'wall' && cursor && !last && (
-          <circle cx={snap(cursor).point.x} cy={snap(cursor).point.y} r={px(5)} fill="#3b82f6" style={{ pointerEvents: 'none' }} />
+          <circle cx={snap(cursor).point.x} cy={snap(cursor).point.y} r={px(5)} fill="#2563eb" style={{ pointerEvents: 'none' }} />
         )}
 
         {/* Room tool preview */}
@@ -683,7 +691,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           const h = Math.abs(roomRect.b.y - roomRect.a.y);
           return (
             <g style={{ pointerEvents: 'none' }}>
-              <rect x={x} y={y} width={w} height={h} fill="#3b82f6" fillOpacity={0.12} stroke="#3b82f6" strokeWidth={wallDims.thickness} />
+              <rect x={x} y={y} width={w} height={h} fill="#2563eb" fillOpacity={0.12} stroke="#2563eb" strokeWidth={wallDims.thickness} />
               {lengthLabel({ x, y }, { x: x + w, y }, -px(14), 'rw', '#1d4ed8')}
               {lengthLabel({ x: x + w, y }, { x: x + w, y: y + h }, -px(14), 'rh', '#1d4ed8')}
             </g>
@@ -696,7 +704,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
           const w = tool === 'door' ? 3 : 4;
           return (
-            <rect x={-w / 2} y={-hoverWall.wall.thickness} width={w} height={hoverWall.wall.thickness * 2} fill="#3b82f6" fillOpacity={0.5}
+            <rect x={-w / 2} y={-hoverWall.wall.thickness} width={w} height={hoverWall.wall.thickness * 2} fill="#2563eb" fillOpacity={0.5}
               transform={`translate(${hoverWall.point.x} ${hoverWall.point.y}) rotate(${ang})`} style={{ pointerEvents: 'none' }} />
           );
         })()}
@@ -719,16 +727,130 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         </form>
       )}
 
-      <div className="editor2d-zoom">
+      {/* Floating Canvas Overlays matching the screenshot */}
+      <div className="canvas-zoom-toolbar">
         <button onClick={() => setView(v => ({ ...v, scale: Math.min(200, v.scale * 1.25) }))} title="Zoom in">+</button>
         <button onClick={() => setView(v => ({ ...v, scale: Math.max(2, v.scale / 1.25) }))} title="Zoom out">−</button>
-        <button onClick={fitView} title="Fit plan (.)">⤢</button>
-        <button onClick={() => setShowDims(s => !s)} title="Toggle dimensions" style={{ color: showDims ? '#3b82f6' : undefined }}>↔</button>
+        <button onClick={fitView} title="Fit to screen">
+          <Maximize2 size={16} />
+        </button>
+        <button onClick={() => setView(v => ({ ...v, cx: 0, cy: 0 }))} title="Recenter">
+          <Crosshair size={16} />
+        </button>
       </div>
-      <div className="editor2d-north" title="North is up">N ↑</div>
-      <div className="editor2d-hint">
-        {readOnly ? 'Example plan is read-only. Switch to P1 or P2 in the Project tab to edit.' : HINTS[tool.startsWith('item:') ? 'item' : tool]}
-        {typed && <strong style={{ marginLeft: 8, color: '#3b82f6' }}>Length: {typed} {unit === 'mt' ? 'm' : 'ft'} ↵</strong>}
+
+      <div className="canvas-tools-bar">
+        <button
+          className={`canvas-tool-btn ${tool === 'select' ? 'active' : ''}`}
+          onClick={() => setTool('select')}
+          title="Select (Esc)"
+        >
+          <MousePointer2 size={18} />
+          <span>Select</span>
+        </button>
+        <button
+          className={`canvas-tool-btn ${tool === 'wall' ? 'active' : ''}`}
+          onClick={() => setTool('wall')}
+          disabled={readOnly}
+          title="Wall (W)"
+        >
+          <Square size={18} />
+          <span>Wall</span>
+        </button>
+        <button
+          className={`canvas-tool-btn ${tool === 'door' ? 'active' : ''}`}
+          onClick={() => setTool('door')}
+          disabled={readOnly}
+          title="Door"
+        >
+          <DoorOpen size={18} />
+          <span>Door</span>
+        </button>
+        <button
+          className={`canvas-tool-btn ${tool === 'window' ? 'active' : ''}`}
+          onClick={() => setTool('window')}
+          disabled={readOnly}
+          title="Window"
+        >
+          <AppWindow size={18} />
+          <span>Window</span>
+        </button>
+        <button
+          className={`canvas-tool-btn ${tool === 'room' ? 'active' : ''}`}
+          onClick={() => setTool('room')}
+          disabled={readOnly}
+          title="Room (R)"
+        >
+          <Box size={18} />
+          <span>Room</span>
+        </button>
+        <button
+          className="canvas-tool-btn"
+          onClick={() => {
+            // Text tool - allows renaming or setting label
+            if (selection?.kind === 'room') {
+              const r = shownRooms.find(rm => rm.id === selection.id);
+              const newName = window.prompt("Edit room name:", r?.label?.name || '');
+              if (newName !== null) onCommit(ops.setRoomLabel(plan, r!, { name: newName }));
+            }
+          }}
+          title="Text / Label"
+        >
+          <Type size={18} />
+          <span>Text</span>
+        </button>
+        <button
+          className={`canvas-tool-btn ${showDims ? 'active-dim' : ''}`}
+          onClick={() => setShowDims(s => !s)}
+          title="Toggle Dimensions"
+        >
+          <MoveHorizontal size={18} />
+          <span>Dimension</span>
+        </button>
+        <button
+          className="canvas-tool-btn delete-tool-btn"
+          onClick={deleteSelection}
+          disabled={!selection || readOnly}
+          title="Delete selected item (Del)"
+        >
+          <Trash2 size={18} />
+          <span>Delete</span>
+        </button>
+      </div>
+
+      <Compass rotation={0} />
+
+      <div className="canvas-bottom-area-card">
+        <div className="area-card-badge">
+          <Layers size={18} />
+        </div>
+        <div className="area-card-text">
+          <span className="area-card-label">Total Built Area</span>
+          <span className="area-card-value">{formatArea(totalBuiltArea, unit)}</span>
+        </div>
+      </div>
+
+      <div className="canvas-bottom-tip">
+        <Lightbulb size={16} className="tip-bulb-icon" />
+        <span>
+          {readOnly
+            ? 'Example plan is read-only. Switch to P1 or P2 to edit.'
+            : 'Click to select. Drag corners, walls, doors and furniture to move them. Drag empty space to pan, scroll to zoom. (Shift keeps proportions)'}
+        </span>
+        {typed && (
+          <strong style={{ marginLeft: 8, color: '#2563eb' }}>
+            Length: {typed} {unit === 'mt' ? 'm' : 'ft'} ↵
+          </strong>
+        )}
+      </div>
+
+      <div className="canvas-zoom-pill">
+        <button onClick={() => setView(v => ({ ...v, scale: Math.max(2, v.scale / 1.25) }))} title="Zoom out">−</button>
+        <span className="zoom-percentage-text">{Math.round((view.scale / 14) * 100)}% <span className="caret">▾</span></span>
+        <button onClick={() => setView(v => ({ ...v, scale: Math.min(200, v.scale * 1.25) }))} title="Zoom in">+</button>
+        <button onClick={fitView} title="Fit to screen">
+          <Maximize2 size={14} />
+        </button>
       </div>
     </div>
   );

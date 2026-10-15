@@ -4,8 +4,9 @@ import React, { useEffect, useState } from 'react';
 import {
   AppWindow, Armchair, ChevronLeft, DoorOpen, FlipHorizontal2, Hammer, LayoutDashboard, MousePointer2, PenLine,
   Image as ImageIcon, Lock, Move, RotateCw, Ruler, Scissors, Square, Trash2, Upload,
+  Search, Eye, MoreVertical, Plus
 } from 'lucide-react';
-import { ITEM_CATALOG, itemSize, itemSpec, MIN_ITEM_SIZE, Plan, ROOM_TYPES, roomType } from '../plan/types';
+import { ITEM_CATALOG, itemSize, itemSpec, MIN_ITEM_SIZE, Plan, ROOM_TYPES, roomType, getRoomColor } from '../plan/types';
 import type { Room } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { lerp } from '../plan/geometry';
@@ -29,6 +30,8 @@ interface Props {
   onSwitchPlan: (i: 0 | 1 | 2) => void;
   wallDims: { thickness: number; height: number };
   setWallDims: (d: { thickness: number; height: number }) => void;
+  activeNav?: 'plans' | 'rooms' | 'settings' | 'templates' | 'export';
+  setActiveNav?: (nav: 'plans' | 'rooms' | 'settings' | 'templates' | 'export') => void;
 }
 
 // Number input that commits on Enter/blur (one undo step per edit, no rounding fights while typing).
@@ -88,69 +91,60 @@ const DangerButton = ({ onClick, children }: { onClick: () => void; children: Re
 );
 
 export function Sidebar(props: Props) {
-  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims } = props;
-  const [tab, setTab] = useState<'project' | 'build' | 'furniture'>('build');
+  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans' } = props;
 
   return (
-    <div className="sidebar-container">
-      <div className="sidebar-icons">
-        <button className={`sidebar-icon-btn ${tab === 'project' && !selection ? 'active' : ''}`} onClick={() => { setTab('project'); setSelection(null); }} title="Project & Plans"><LayoutDashboard size={20} /></button>
-        <button className={`sidebar-icon-btn ${tab === 'build' && !selection ? 'active' : ''}`} onClick={() => { setTab('build'); setSelection(null); }} title="Build"><Hammer size={20} /></button>
-        <button className={`sidebar-icon-btn ${tab === 'furniture' && !selection ? 'active' : ''}`} onClick={() => { setTab('furniture'); setSelection(null); }} title="Furniture"><Armchair size={20} /></button>
-      </div>
-
-      <div className="sidebar-panel">
-        {selection ? (
+    <div className="sidebar-panel-container">
+      {selection ? (
+        <div style={{ padding: 16 }}>
           <Inspector {...props} />
-        ) : tab === 'project' ? (
-          <ProjectPanel rooms={rooms} unit={unit} readOnly={readOnly} activePlanIndex={activePlanIndex} onSwitchPlan={onSwitchPlan} setSelection={setSelection} />
-        ) : tab === 'build' ? (
-          <>
-            <div className="sidebar-section">
-              <h3>Tools</h3>
-              <div className="tool-grid">
-                <ToolButton active={tool === 'select'} onClick={() => setTool('select')} icon={<MousePointer2 size={18} />} label="Select" shortcut="Esc" />
-                <ToolButton active={tool === 'room'} onClick={() => setTool('room')} icon={<Square size={18} />} label="Draw Room" shortcut="R" disabled={readOnly} />
-                <ToolButton active={tool === 'wall'} onClick={() => setTool('wall')} icon={<PenLine size={18} />} label="Draw Wall" shortcut="W" disabled={readOnly} />
-                <ToolButton active={tool === 'door'} onClick={() => setTool('door')} icon={<DoorOpen size={18} />} label="Door" disabled={readOnly} />
-                <ToolButton active={tool === 'window'} onClick={() => setTool('window')} icon={<AppWindow size={18} />} label="Window" disabled={readOnly} />
-              </div>
-            </div>
-            {!readOnly && (
-              <>
-                <div className="sidebar-section">
-                  <h3>New walls</h3>
-                  <div className="grid-2">
-                    <LenField label="Thickness" unit={unit} value={wallDims.thickness} min={0.05} onChange={thickness => setWallDims({ ...wallDims, thickness })} />
-                    <LenField label="Height" unit={unit} value={wallDims.height} min={1} onChange={height => setWallDims({ ...wallDims, height })} />
-                  </div>
-                </div>
-                <QuickRoom plan={plan} unit={unit} wallDims={wallDims} onCommit={onCommit} />
-                <BackgroundSection plan={plan} unit={unit} tool={tool} setTool={setTool} onCommit={onCommit} />
-              </>
-            )}
-          </>
-        ) : (
+        </div>
+      ) : activeNav === 'settings' ? (
+        <div style={{ padding: 16 }}>
           <div className="sidebar-section">
-            <h3>Furniture</h3>
-            {readOnly && <p className="muted">Switch to P1 or P2 to add furniture.</p>}
-            {Array.from(new Set(ITEM_CATALOG.map(i => i.category))).map(cat => (
-              <div key={cat} style={{ marginBottom: 12 }}>
-                <div className="muted" style={{ marginBottom: 6 }}>{cat}</div>
-                <div className="tool-grid">
-                  {ITEM_CATALOG.filter(i => i.category === cat).map(i => (
-                    <button key={i.id} className={`tool-btn ${tool === `item:${i.id}` ? 'active' : ''}`} disabled={readOnly} onClick={() => setTool(`item:${i.id}`)}>
-                      <ItemThumb type={i.id} w={i.w} d={i.d} color={i.color} />
-                      <span>{i.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-            <p className="muted">Pick an item, then click on the plan to place it. Select it and press R to rotate.</p>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 16 }}>Wall Settings</h3>
+            <div className="grid-2">
+              <LenField label="Thickness" unit={unit} value={wallDims.thickness} min={0.05} onChange={thickness => setWallDims({ ...wallDims, thickness })} />
+              <LenField label="Height" unit={unit} value={wallDims.height} min={1} onChange={height => setWallDims({ ...wallDims, height })} />
+            </div>
           </div>
-        )}
-      </div>
+          <BackgroundSection plan={plan} unit={unit} tool={tool} setTool={setTool} onCommit={onCommit} />
+        </div>
+      ) : activeNav === 'templates' ? (
+        <div style={{ padding: 16 }}>
+          <QuickRoom plan={plan} unit={unit} wallDims={wallDims} onCommit={onCommit} />
+        </div>
+      ) : activeNav === 'export' ? (
+        <div style={{ padding: 16 }}>
+          <div className="sidebar-section">
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>Export & Plans</h3>
+            <p className="muted">Export your floor plan layout or backup your project.</p>
+            <button
+              className="primary-btn"
+              style={{ marginBottom: 10 }}
+              onClick={() => {
+                const data = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(plan, null, 2));
+                const a = document.createElement('a');
+                a.href = data;
+                a.download = `plan-${activePlanIndex === 0 ? 'P1' : activePlanIndex === 1 ? 'P2' : 'Example'}.json`;
+                a.click();
+              }}
+            >
+              <Upload size={14} /> Download Plan JSON
+            </button>
+          </div>
+        </div>
+      ) : (
+        <ProjectPanel
+          rooms={rooms}
+          unit={unit}
+          readOnly={readOnly}
+          activePlanIndex={activePlanIndex}
+          onSwitchPlan={onSwitchPlan}
+          setSelection={setSelection}
+          selection={selection}
+        />
+      )}
     </div>
   );
 }
@@ -179,15 +173,17 @@ function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan
 
   return (
     <div className="sidebar-section">
-      <h3><ImageIcon size={14} style={{ verticalAlign: -2 }} /> Background image</h3>
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 12 }}>
+        <ImageIcon size={14} style={{ verticalAlign: -2 }} /> Reference Drawing
+      </h3>
       {!bg ? (
         <>
-          <label className={`secondary-btn upload-btn ${busy ? 'disabled' : ''}`}>
+          <label className={`primary-btn upload-btn ${busy ? 'disabled' : ''}`}>
             <Upload size={14} /> {busy ? 'Loading…' : 'Upload floor plan'}
             <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={busy}
               onChange={e => { upload(e.target.files?.[0]); e.target.value = ''; }} />
           </label>
-          <p className="muted">Trace over a drawing or scan (PNG or JPG). You'll set its scale by measuring one known length.</p>
+          <p className="muted">Trace over an architectural drawing or scan (PNG or JPG).</p>
         </>
       ) : (
         <>
@@ -215,32 +211,93 @@ function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan
   );
 }
 
-function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, setSelection }: {
-  rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void;
+function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, setSelection, selection }: {
+  rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void; selection?: Selection;
 }) {
+  const [search, setSearch] = useState('');
   const total = rooms.reduce((s, r) => s + r.area, 0);
+  const filtered = rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(search.toLowerCase()));
+
   return (
     <>
-      <div className="sidebar-section">
-        <h3>Plans</h3>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['P1', 'P2', 'Example'] as const).map((label, i) => (
-            <button key={label} className={`seg-btn ${activePlanIndex === i ? 'active' : ''}`} onClick={() => onSwitchPlan(i as 0 | 1 | 2)}>{label}</button>
-          ))}
-        </div>
-        {readOnly && <p className="notice">This example is read-only. Switch to P1 or P2 to edit.</p>}
+      <div className="sidebar-header-row">
+        <h2 className="sidebar-title">Plans</h2>
+        <button
+          className="new-plan-btn"
+          onClick={() => {
+            if (activePlanIndex === 0) onSwitchPlan(1);
+            else onSwitchPlan(0);
+          }}
+          title="Switch / Create Plan"
+        >
+          + New Plan
+        </button>
       </div>
-      <div className="sidebar-section">
-        <h3>Rooms ({rooms.length})</h3>
-        {rooms.length > 0 && <p className="muted">Built area {formatArea(total, unit)}</p>}
-        {rooms.length === 0 && <p className="muted">No rooms yet. Use Draw Room or Quick room, or click inside closed walls and choose Make this a room.</p>}
-        {rooms.map(r => (
-          <button key={r.key} className="room-row" onClick={() => setSelection({ kind: 'room', id: r.id })}>
-            <span className="swatch" style={{ background: roomType(r.label?.type)?.color ?? '#e9e4da' }} />
-            <span style={{ flex: 1, textAlign: 'left' }}>{r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room'}</span>
-            <span className="muted">{formatArea(r.area, unit)}</span>
+
+      <div className="plan-pills-row">
+        {(['P1', 'P2', 'Example'] as const).map((label, i) => (
+          <button
+            key={label}
+            className={`plan-pill-btn ${activePlanIndex === i ? 'active' : ''}`}
+            onClick={() => onSwitchPlan(i as 0 | 1 | 2)}
+          >
+            {label}
           </button>
         ))}
+      </div>
+
+      <div className="rooms-header-block">
+        <h3 className="rooms-header-title">Rooms ({rooms.length})</h3>
+        <p className="rooms-header-sub">Built area {formatArea(total, unit)}</p>
+        <div className="search-rooms-box">
+          <Search size={14} color="#94a3b8" />
+          <input
+            type="text"
+            placeholder="Search rooms..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="rooms-scroll-list">
+        {filtered.map(r => (
+          <div
+            key={r.key}
+            className={`room-list-item ${selection?.kind === 'room' && selection.id === r.id ? 'selected' : ''}`}
+            onClick={() => setSelection({ kind: 'room', id: r.id })}
+          >
+            <span
+              className="room-color-swatch"
+              style={{ background: getRoomColor(r.label?.name, r.label?.type) }}
+            />
+            <span className="room-item-name">
+              {r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room'}
+            </span>
+            <span className="room-item-area">{formatArea(r.area, unit)}</span>
+            <div className="room-item-actions">
+              <button
+                className="room-item-btn"
+                onClick={e => { e.stopPropagation(); setSelection({ kind: 'room', id: r.id }); }}
+                title="View room"
+              >
+                <Eye size={15} />
+              </button>
+              <button
+                className="room-item-btn"
+                onClick={e => { e.stopPropagation(); setSelection({ kind: 'room', id: r.id }); }}
+                title="More options"
+              >
+                <MoreVertical size={15} />
+              </button>
+            </div>
+          </div>
+        ))}
+        {rooms.length === 0 && (
+          <p className="muted" style={{ padding: '0 8px' }}>
+            No rooms yet. Use Wall or Room tool to create rooms.
+          </p>
+        )}
       </div>
     </>
   );
@@ -264,7 +321,7 @@ function QuickRoom({ plan, unit, wallDims, onCommit }: { plan: Plan; unit: Displ
   };
   return (
     <div className="sidebar-section">
-      <h3>Quick room</h3>
+      <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>Quick room</h3>
       <div className="prop-group">
         <label>Type</label>
         <select value={type} onChange={e => setType(e.target.value)}>
@@ -285,7 +342,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
   if (!selection) return null;
   const back = (
     <button className="back-btn" onClick={() => setSelection(null)}>
-      <ChevronLeft size={16} /> Back
+      <ChevronLeft size={16} /> Back to Rooms
     </button>
   );
   const ro = readOnly ? <p className="notice">Read-only example.</p> : null;
@@ -297,7 +354,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
     return (
       <div className="sidebar-section">
         {back}
-        <h3>Room</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>Room Properties</h3>
         {ro}
         <fieldset disabled={readOnly} className="plain">
           <TextField label="Name" value={room.label?.name ?? ''} onChange={name => onCommit(ops.setRoomLabel(plan, room, { name }))} />
@@ -320,7 +377,6 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
   if (selection.kind === 'space') {
     const space = spaces.find(s => s.id === selection.id && !s.label);
     if (!space) return <>{back}<p className="muted">This area is no longer enclosed.</p></>;
-    // Marking a space creates a room label; select the new room afterwards.
     const makeRoom = (type: string) => {
       const next = ops.setRoomLabel(plan, space, { type, name: roomType(type)?.name ?? '' });
       onCommit(next);
@@ -330,7 +386,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
     return (
       <div className="sidebar-section">
         {back}
-        <h3>Enclosed space</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>Enclosed space</h3>
         {ro}
         <p className="muted">These walls enclose {formatArea(space.area, unit)}, but it isn't a room yet. Rooms get a floor, a name and a type, show in 3D, and count towards built area.</p>
         <fieldset disabled={readOnly} className="plain">
@@ -356,7 +412,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
     return (
       <div className="sidebar-section">
         {back}
-        <h3>Wall</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>Wall Properties</h3>
         {ro}
         <fieldset disabled={readOnly} className="plain">
           <LenField label="Length" unit={unit} value={ops.wallLength(plan, wall)} min={0.5} onChange={L => onCommit(ops.setWallLength(plan, wall.id, L))} />
@@ -388,7 +444,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
     return (
       <div className="sidebar-section">
         {back}
-        <h3>Corner</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>Corner Properties</h3>
         {ro}
         <fieldset disabled={readOnly} className="plain">
           <div className="grid-2">
@@ -411,7 +467,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
     return (
       <div className="sidebar-section">
         {back}
-        <h3>{o.kind === 'door' ? 'Door' : 'Window'}</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>{o.kind === 'door' ? 'Door' : 'Window'}</h3>
         {ro}
         <fieldset disabled={readOnly} className="plain">
           <div className="grid-2">
@@ -439,7 +495,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
   return (
     <div className="sidebar-section">
       {back}
-      <h3>{spec?.name ?? item.type}</h3>
+      <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '8px 0 12px 0' }}>{spec?.name ?? item.type}</h3>
       {ro}
       <fieldset disabled={readOnly} className="plain">
         <div className="grid-3">

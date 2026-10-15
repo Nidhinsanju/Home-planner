@@ -5,7 +5,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { saveBuild } from './actions/build';
-import { TopBar, Compass, ChatSidebar } from './UI';
+import { TopBar, Compass, ChatSidebar, NavRail } from './UI';
 import { DPad } from './DPad';
 import { Editor2D, Selection, Tool } from './editor/Editor2D';
 import { View3D } from './editor/View3D';
@@ -83,6 +83,7 @@ function App({ initialUser }: any) {
   const [wallDims, setWallDims] = useState({ ...WALL_DEFAULTS });
   const [cutaway, setCutaway] = useState(true);
   const [rotation, setRotation] = useState(0);
+  const [activeNav, setActiveNav] = useState<'plans' | 'rooms' | 'settings' | 'templates' | 'export'>('plans');
   const [panState, setPanState] = useState({ up: false, down: false, left: false, right: false });
   const [, forceRender] = useState(0);
 
@@ -226,52 +227,65 @@ function App({ initialUser }: any) {
   };
 
   return (
-    <div className="app-container">
-      <TopBar
-        view={view} setView={setView}
-        onUndo={undo} canUndo={current.index > 0}
-        onRedo={redo} canRedo={current.index < current.history.length - 1}
-        unit={unit} setUnit={setUnit}
-        onSave={readOnly ? undefined : handleSave} dirty={dirty}
-        onRemovePlan={readOnly ? undefined : handleRemovePlan}
-        onLogout={handleLogout}
-        username={initialUser?.name}
-        cutaway={cutaway} setCutaway={setCutaway}
-      />
-
-      <div className="main-content">
-        <Sidebar
-          plan={plan} rooms={rooms} spaces={spaces} unit={unit}
-          tool={tool} setTool={t => { setTool(t); if (t !== 'select') setView('2d'); }}
-          selection={selection} setSelection={setSelection}
-          onCommit={commit} readOnly={readOnly}
-          activePlanIndex={activePlanIndex} onSwitchPlan={handleSwitchPlan}
-          wallDims={wallDims} setWallDims={setWallDims}
+    <div className="app-layout">
+      <NavRail activeNav={activeNav} onSelectNav={setActiveNav} />
+      <div className="app-main">
+        <TopBar
+          view={view} setView={setView}
+          onUndo={undo} canUndo={current.index > 0}
+          onRedo={redo} canRedo={current.index < current.history.length - 1}
+          unit={unit} setUnit={setUnit}
+          onSave={readOnly ? undefined : handleSave} dirty={dirty}
+          onRemovePlan={readOnly ? undefined : handleRemovePlan}
+          onLogout={handleLogout}
+          username={initialUser?.name}
+          cutaway={cutaway} setCutaway={setCutaway}
         />
 
-        <div className="canvas-container">
-          {view === '2d' ? (
-            <Editor2D
-              key={activePlanIndex}
-              plan={plan} spaces={spaces} unit={unit}
-              tool={tool} setTool={setTool}
-              selection={selection} setSelection={setSelection}
-              onCommit={commit} readOnly={readOnly} wallDims={wallDims}
-            />
-          ) : (
-            <>
-              {/* Compass turns with the camera; north is -z in the 3D world (-y on the plan). */}
-              <Compass rotation={rotation} />
-              <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
-              <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
-                <CameraController key={activePlanIndex} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
-                <View3D plan={plan} rooms={rooms} unit={unit} selection={selection} onSelect={setSelection} cutaway={cutaway} />
-              </Canvas>
-            </>
-          )}
+        <div className="main-content">
+          <Sidebar
+            plan={plan} rooms={rooms} spaces={spaces} unit={unit}
+            tool={tool} setTool={t => { setTool(t); if (t !== 'select') setView('2d'); }}
+            selection={selection} setSelection={setSelection}
+            onCommit={commit} readOnly={readOnly}
+            activePlanIndex={activePlanIndex} onSwitchPlan={handleSwitchPlan}
+            wallDims={wallDims} setWallDims={setWallDims}
+            activeNav={activeNav} setActiveNav={setActiveNav}
+          />
+
+          <div className="canvas-container">
+            {view === '2d' ? (
+              <Editor2D
+                key={activePlanIndex}
+                plan={plan} spaces={spaces} unit={unit}
+                tool={tool} setTool={setTool}
+                selection={selection} setSelection={setSelection}
+                onCommit={commit} readOnly={readOnly} wallDims={wallDims}
+              />
+            ) : (
+              <>
+                {/* Compass turns with the camera; north is -z in the 3D world (-y on the plan). */}
+                <Compass rotation={rotation} />
+                <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
+                <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
+                  <CameraController key={activePlanIndex} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
+                  <View3D plan={plan} rooms={rooms} unit={unit} selection={selection} onSelect={setSelection} cutaway={cutaway} />
+                </Canvas>
+              </>
+            )}
+          </div>
+          <ChatSidebar
+            onBuildCommands={handleBuildCommands}
+            onSetPlan={handleSetPlan}
+            activePlanIndex={activePlanIndex}
+            sceneData={sceneData}
+            background={readOnly ? undefined : plan.background}
+            onImageRead={handleImageRead}
+            onImageChoice={handleImageChoice}
+            onSwitchView={setView}
+            setTool={setTool}
+          />
         </div>
-        <ChatSidebar onBuildCommands={handleBuildCommands} onSetPlan={handleSetPlan} activePlanIndex={activePlanIndex} sceneData={sceneData}
-          background={readOnly ? undefined : plan.background} onImageRead={handleImageRead} onImageChoice={handleImageChoice} />
       </div>
     </div>
   );
