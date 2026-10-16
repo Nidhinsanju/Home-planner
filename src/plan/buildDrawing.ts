@@ -2,6 +2,7 @@ import type { Plan } from './types';
 import { updateBackground } from './ops';
 import { layoutFromExtraction, type DrawingLayout } from './fromExtraction';
 import { toPixelSpace } from './extraction';
+import { drawingMask } from './wallMask';
 import { applySetPlan, type SetPlanResult } from './setPlan';
 
 // Builds the plan from what the AI read off the uploaded drawing: works out the scale from the
@@ -12,10 +13,11 @@ import { applySetPlan, type SetPlanResult } from './setPlan';
 const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 // The drawing's layout in feet, or null when the image hasn't been read with the full reader.
+// Uses the image's walls when the editor has decoded it (see wallMask.ts).
 export function drawingLayout(plan: Plan): DrawingLayout | { error: string } | null {
   const a = plan.background?.analysis;
   if (!a?.extraction || !a.imageWidth || !a.imageHeight) return null;
-  return layoutFromExtraction(toPixelSpace(a.extraction, a.imageWidth, a.imageHeight), { width: a.imageWidth, height: a.imageHeight });
+  return layoutFromExtraction(toPixelSpace(a.extraction, a.imageWidth, a.imageHeight), { width: a.imageWidth, height: a.imageHeight }, undefined, drawingMask(plan.background?.src));
 }
 
 export function buildFromDrawing(plan: Plan, only?: string[]): { plan: Plan; result: SetPlanResult; layout: DrawingLayout } | { error: string } | null {
@@ -40,5 +42,8 @@ export function describeLayout(layout: DrawingLayout) {
   const fit = layout.checks.length
     ? ` ${ok} of ${layout.checks.length} labelled rooms are within 6 in of their written size${ok < layout.checks.length && worst ? ` (furthest: ${worst.name}, ${(worst.offBy * 12).toFixed(0)} in off)` : ''}.`
     : '';
-  return `Scale ${layout.pxPerFt.toFixed(1)} px/ft, from ${layout.scaleFrom.length} labelled room${layout.scaleFrom.length === 1 ? '' : 's'}; the image is now lined up with the plan.${fit}`;
+  const warn = layout.warnings.length
+    ? ` Check these against the drawing: ${layout.warnings.slice(0, 4).join('; ')}${layout.warnings.length > 4 ? ` (and ${layout.warnings.length - 4} more)` : ''}.`
+    : '';
+  return `Scale ${layout.pxPerFt.toFixed(1)} px/ft, from ${layout.scaleFrom.length} labelled room${layout.scaleFrom.length === 1 ? '' : 's'}; the image is now lined up with the plan.${fit}${warn}`;
 }

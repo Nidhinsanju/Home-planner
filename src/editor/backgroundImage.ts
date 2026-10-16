@@ -2,6 +2,8 @@
 // Large scans are scaled down (they are only traced over, so ~2000px is plenty) and
 // re-encoded as JPEG on white, which keeps saved plans small.
 
+import { darkMaskFromRGBA, drawingMask, setDrawingMask } from '../plan/wallMask';
+
 const loadImage = (src: string) =>
   new Promise<HTMLImageElement>((resolve, reject) => {
     const el = new Image();
@@ -37,6 +39,29 @@ export async function loadBackgroundImage(file: File): Promise<{ src: string; as
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+// Decodes a background image into its dark pixels, at the size the vision model read it, so
+// building from the drawing can line the rooms up with the walls on it (see plan/wallMask.ts).
+// Done once per image; later calls return at once.
+const pendingMasks = new Map<string, Promise<void>>();
+export function loadDrawingMask(src: string): Promise<void> {
+  if (drawingMask(src)) return Promise.resolve();
+  let p = pendingMasks.get(src);
+  if (!p) {
+    p = loadImage(src).then(img => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Your browser could not process the image.');
+      ctx.drawImage(img, 0, 0);
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      setDrawingMask(src, darkMaskFromRGBA(data, canvas.width, canvas.height));
+    }).finally(() => pendingMasks.delete(src));
+    pendingMasks.set(src, p);
+  }
+  return p;
 }
 
 // Pixel size of a background image. The vision model gets the image exactly as stored (up to

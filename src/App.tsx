@@ -17,6 +17,7 @@ import { examplePlan, planFromBuild } from './plan/migrate';
 import { applyCommands, BuildCommand, describePlan } from './plan/commands';
 import { applySetPlan, describeCounts, type SetPlanPayload } from './plan/setPlan';
 import { buildFromDrawing, describeLayout } from './plan/buildDrawing';
+import { loadDrawingMask } from './editor/backgroundImage';
 import { describeChange } from './plan/summary';
 import type { AiChange } from './UI';
 import { DisplayUnit } from './units';
@@ -173,10 +174,19 @@ function App({ initialUser }: any) {
 
   const sceneData = useMemo(() => describePlan(plan), [plan]);
 
+  // Decode the uploaded drawing's pixels in the background, so building from it can follow
+  // the walls drawn on it. Builds wait for it (ensureDrawingMask) in case it isn't ready yet.
+  const backgroundSrc = plan.background?.src;
+  useEffect(() => {
+    if (backgroundSrc) loadDrawingMask(backgroundSrc).catch(() => {});
+  }, [backgroundSrc]);
+  const ensureDrawingMask = () => (backgroundSrc ? loadDrawingMask(backgroundSrc).catch(() => {}) : Promise.resolve());
+
   // Applies AI commands as one undo step and saves the result. Returns whether the plan
   // changed, what changed (in words, from comparing the plans) and notes for the chat.
   const handleBuildCommands = async (cmds: BuildCommand[]): Promise<AiChange> => {
     if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
+    if (cmds.some(c => c?.action === 'buildFromDrawing')) await ensureDrawingMask();
     const { plan: next, errors } = applyCommands(plan, cmds);
     const { changed, text } = describeChange(plan, next);
     if (changed) errors.push(...(await commitAndSave(next)));
@@ -215,6 +225,7 @@ function App({ initialUser }: any) {
     if (use === 'context') {
       return { message: 'OK, I\'ll keep your drawing as reference. You can ask things like "build the kitchen from the drawing" or "what rooms are on it?".', notes: await commitAndSave(ops.updateBackground(plan, { use })) };
     }
+    await ensureDrawingMask();
     const built = buildFromDrawing(plan);
     if (built && 'error' in built) return { message: built.error, notes: [] };
     if (built) {

@@ -111,33 +111,43 @@ Return ONLY JSON, no other text, in exactly this shape:
 `;
 
 // Step A of building from a drawing: read every space on the floor plan as JSON (validated by
-// ExtractionSchema in src/plan/extraction.ts). Bump EXTRACTION_VERSION when this changes, so
-// cached reads made with the old prompt are not reused.
-export const EXTRACTION_VERSION = 'extract-v1';
-export const extractionPrompt = (w: number, h: number) => `
-This image is an architectural floor plan, ${w} x ${h} pixels. Read it precisely; the result is used to rebuild the plan to scale.
+// WireSchema in src/plan/extraction.ts, and enforced as the response format where the provider
+// supports it). `space` is the coordinate system asked for: 0-1000 for Gemini (what it is
+// trained on), pixels for the others. Bump EXTRACTION_VERSION when this changes, so cached
+// reads made with the old prompt are not reused.
+export const EXTRACTION_VERSION = 'extract-v2';
+export const extractionPrompt = (w: number, h: number, space: 'px' | 'norm1000' = 'px') => {
+  const coords = space === 'norm1000'
+    ? `Every coordinate is [x, y] on a 0-1000 scale of this image: x = 0 at the left edge and 1000 at the right edge, y = 0 at the top and 1000 at the bottom. Use this scale for EVERY room, door and window (never pixels).`
+    : `Every coordinate is [x, y] in pixels of this ${w} x ${h} image: x from 0 (left edge) to ${w} (right edge), y from 0 (top edge) to ${h} (bottom edge).`;
+  return `
+This image is an architectural floor plan. Read it precisely; the result is used to rebuild the plan to scale in 3D.
+
+COORDINATES: ${coords} A box is [left, top, right, bottom].
 
 Return ONLY JSON (no prose, no code fence) in exactly this shape:
 {
   "summary": "one or two sentences about the layout",
-  "rooms": [{"name": "Bedroom 1", "type": "bed", "label": "12' 0\\" x 9' 11\\"", "labeledWidthFt": 12, "labeledDepthFt": 9.92, "approxBoxPx": [x1, y1, x2, y2], "polygonPx": null, "connectsTo": ["Hallway"], "openTo": []}],
-  "doors": [{"between": ["Bedroom 1", "Hallway"], "approxPx": [x, y]}],
-  "windows": [{"room": "Bedroom 1", "wallSide": "north", "approxPx": [x, y]}],
-  "entry": {"approxPx": [x, y]}
+  "rooms": [{"name": "Bedroom 1", "type": "bed", "label": "12' 0\\" x 9' 11\\"", "widthFt": 12, "depthFt": 9.92, "box": [left, top, right, bottom], "polygon": null, "connectsTo": ["Hallway"], "openTo": []}],
+  "doors": [{"between": ["Bedroom 1", "Hallway"], "at": [x, y]}],
+  "windows": [{"room": "Bedroom 1", "side": "north", "at": [x, y]}],
+  "entry": [x, y]
 }
 
 RULES
-- List EVERY enclosed space, including small ones: walk-in closets, closets, laundry, mech, pantry, hallway, balcony, each bath. Give repeated names a number (Bedroom 1, Bedroom 2, Walk-in Closet 1...).
+- List EVERY space, including small ones: walk-in closets, closets, laundry, mech, pantry, hallway, balcony, each bath. Give repeated names a number (Bedroom 1, Bedroom 2, Walk-in Closet 1...).
+- Open-plan areas: the kitchen, living, dining and the hallway/foyer are often one open space with no walls between them. List each as its own room, with boxes that meet edge to edge where one area ends and the next begins (e.g. at the kitchen counter), and name the others in "openTo". The floor between rooms (corridors, foyer, passage to the living room) belongs to the Hallway.
 - "type": one of living, bed, kitchen, dining, toilet, pooja, study, utility, store, staircase, parking, balcony, hallway (closets = store, laundry and mech = utility, bath = toilet).
-- "label": the size text written in the room, copied exactly (e.g. 16' 7" x 17' 5"), or null if none. "labeledWidthFt"/"labeledDepthFt": the same two numbers in decimal feet, in the order written, or null. Written sizes are the ground truth.
-- "approxBoxPx": [left, top, right, bottom] in PIXELS of this image, measured to the INSIDE faces of the walls around the room. Be careful and precise: rooms that share a wall must have edges one wall-thickness apart, and boxes must not overlap.
-- "polygonPx": only for a room that is not a rectangle (diagonal or L-shaped walls): its inside corners in order, [[x, y], ...]. Otherwise null.
-- "openTo": rooms this one opens into with NO wall between them (e.g. an open kitchen and living room). Do not list rooms joined by a door.
+- "label": the size text written in the room, copied exactly (e.g. 16' 7" x 17' 5"), or null if none. "widthFt"/"depthFt": the same two numbers in decimal feet, in the order written, or null. Written sizes are the ground truth.
+- "box": the room's rectangle, measured to the INSIDE faces of the walls around it. Be careful and precise: rooms that share a wall have edges one wall-thickness apart, and boxes must not overlap.
+- "polygon": only for a room that is not a rectangle (diagonal or L-shaped walls, like a hallway): its inside corners in order, [[x, y], ...]. Otherwise null.
+- "openTo": rooms this one opens into with NO wall between them. Do not list rooms joined by a door.
 - "connectsTo": rooms reachable from this one through a door or opening.
-- "doors": every door (swing arc or gap in a wall), with the two spaces it joins ("outside" for an exterior door) and the pixel point of its centre on the wall.
-- "windows": every window (thin double/triple line in an outer wall), with its room, which side of the room (north = top of the image) and its centre point.
+- "doors": every door (swing arc or gap in a wall), with the two spaces it joins ("outside" for an exterior door) and the point at the middle of the door opening, ON the wall line (not the middle of the swing arc).
+- "windows": every window (thin double/triple line in an outer wall), with its room, which side of the room ("north" = top of the image, "south", "east" = right, "west") and its centre point on the wall.
 - "entry": the main entrance door's centre point, or null if unclear.
 `;
+};
 
 // ---- Planner (Claude) prompts, used only when the optional planner is enabled (cloudAI.ts).
 // Its plans are carried out step by step by the chat model.

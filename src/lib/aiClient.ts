@@ -101,6 +101,16 @@ export async function withModels<T>(kind: string, request: (model: string) => Pr
   throw lastError;
 }
 
+// The coordinate system to ask for when reading a drawing: Gemini is trained to give
+// positions on a 0-1000 scale and slips into it even when asked for pixels.
+export const coordinateSpace = (): 'px' | 'norm1000' => (aiProvider().name === 'gemini' ? 'norm1000' : 'px');
+
+// Whether the provider takes a JSON schema as the response format (Anthropic's OpenAI-compatible
+// endpoint ignores it). Models that reject it anyway are remembered and asked without it.
+const noSchema = new Set<string>();
+export const supportsJsonSchema = (model: string) => aiProvider().name !== 'anthropic' && !noSchema.has(model);
+export const markNoJsonSchema = (model: string) => noSchema.add(model);
+
 // The reasoning setting in the form the provider accepts (OpenRouter and Gemini only).
 export function reasoningField(effort: string) {
   if (effort === 'off') return {};

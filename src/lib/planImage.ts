@@ -1,16 +1,19 @@
 import { createHash } from 'node:crypto';
 import { getUserByToken, isPlanId } from './session';
 import type { ImageRoom } from '../plan/types';
-import { ExtractionSchema, toPixelSpace, type Extraction } from '../plan/extraction';
+import { fromWire, toPixelSpace, WIRE_JSON_SCHEMA, WireSchema, type Extraction } from '../plan/extraction';
 import { formatIssues } from '../plan/setPlan';
 import { EXTRACTION_VERSION, extractionPrompt } from './aiPrompt';
 import { ImageRead } from './db';
-import { aiClient, aiErrorMessage, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, reasoningField, TryNextModel, withModels } from './aiClient';
+import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, markNoJsonSchema, reasoningField, supportsJsonSchema, TryNextModel, withModels } from './aiClient';
 
-// Step A of building from a drawing: the vision model reads an uploaded floor plan, at the
-// size it was uploaded (up to 2000 px), into JSON: every room with its written size and pixel
-// box, the doors, windows and entry (see src/plan/extraction.ts). Step B, turning that into a
-// plan in feet, is done in code (src/plan/fromExtraction.ts).
+// Step A of building from a drawing: the vision model gets the uploaded floor plan itself (at
+// the size it was uploaded, up to 2000 px, so the written sizes stay legible) and reads it into
+// JSON: every room with its written size and box, the doors, windows and entry, in the
+// coordinate system that suits the provider (see coordinateSpace), with the answer's structure
+// enforced by a JSON schema where supported. The answer is converted to pixels
+// (src/plan/extraction.ts). Step B, turning that into a plan in feet and lining it up with the
+// walls on the image, is done in code (src/plan/fromExtraction.ts, src/plan/wallMask.ts).
 // Each model in AI_MODELS is tried in turn (see aiClient.ts). Reads are cached per image and
 // prompt version; `force` reads again anyway.
 
@@ -82,24 +85,37 @@ async function extract(image: string, width: number, height: number, info: Retur
 async function extractWith(model: string, image: string, width: number, height: number, info: ReturnType<typeof imageInfo>, signal?: AbortSignal): Promise<PlanImageResult> {
   const maxTokens = EXTRACT_MAX_TOKENS();
   const reasoning = EXTRACT_REASONING();
+  const space = coordinateSpace();
   const messages: any[] = [{
     role: 'user',
     content: [
-      { type: 'image_url', image_url: { url: image } },
-      { type: 'text', text: extractionPrompt(width, height) },
+      { type: 'image_url', image_url: { url: image, detail: 'high' } },
+      { type: 'text', text: extractionPrompt(width, height, space) },
     ],
   }];
+  const request = (schema: boolean) => aiClient().chat.completions.create(
+    {
+      model,
+      max_tokens: maxTokens,
+      messages,
+      ...(reasoning !== 'off' ? (reasoningField(reasoning) as object) : { temperature: 0 }),
+      ...(schema ? { response_format: { type: 'json_schema' as const, json_schema: { name: 'floor_plan', strict: true, schema: WIRE_JSON_SCHEMA } } } : {}),
+    },
+    { signal },
+  );
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const response = await aiClient().chat.completions.create(
-      {
-        model,
-        max_tokens: maxTokens,
-        messages,
-        ...(reasoning !== 'off' ? (reasoningField(reasoning) as object) : { temperature: 0 }),
-      },
-      { signal },
-    );
+    let response;
+    const schema = supportsJsonSchema(model);
+    try {
+      response = await request(schema);
+    } catch (error: any) {
+      // A model that won't take the schema is asked again without it (the prompt has the shape).
+      if (!schema || error?.status !== 400 || signal?.aborted) throw error;
+      console.warn(`[ai] read-plan: ${model} rejected the response schema (${String(error?.message).slice(0, 120)}); asking without it`);
+      markNoJsonSchema(model);
+      response = await request(false);
+    }
     if (signal?.aborted) return { aborted: true };
     logAiCall(`read-plan#${attempt + 1}`, model, response, info);
 
@@ -109,9 +125,9 @@ async function extractWith(model: string, image: string, width: number, height: 
     }
     const text = choice?.message.content ?? '';
     const raw = extractJson(text);
-    const parsed = raw ? ExtractionSchema.safeParse(raw) : null;
+    const parsed = raw ? WireSchema.safeParse(raw) : null;
     if (parsed?.success) {
-      const extraction = toPixelSpace(parsed.data, width, height);
+      const extraction = fromWire(parsed.data, space, width, height);
       return { success: true, summary: extraction.summary || `I can see ${extraction.rooms.length} rooms.`, rooms: toImageRooms(extraction, width, height), extraction, imageWidth: width, imageHeight: height, model };
     }
     const problems = parsed ? formatIssues(parsed.error) : ['the reply was not valid JSON'];
