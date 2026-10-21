@@ -147,5 +147,69 @@ export function roomDimensions(room: Room): { width: number; depth: number } | n
   return { width: Math.hypot(w.dx, w.dy), depth: Math.hypot(d.dx, d.dy) };
 }
 
+// A room measured inside its walls, the way sizes are written on floor plans (and shown in
+// the editor): the outline moved in by half of each wall's thickness (dividers aren't built,
+// so a side on a divider stays on it). `sides` are its straight sides, ends of a side where
+// another wall merely joins it are not split.
+export type RoomInterior = { polygon: Vec[]; sides: { a: Vec; b: Vec; length: number; inward: Vec }[]; area: number };
+
+export function roomInterior(plan: Plan, room: Room): RoomInterior {
+  const pos = new Map(plan.corners.map(c => [c.id, c]));
+  // Corners where the outline goes straight on (another wall joins there) are dropped.
+  const P = room.polygon.filter((p, i, arr) => {
+    const a = arr[(i - 1 + arr.length) % arr.length], b = arr[(i + 1) % arr.length];
+    return Math.abs((p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x)) > 1e-6;
+  });
+  const n = P.length;
+  if (n < 3) return { polygon: room.polygon, sides: [], area: room.area };
+  // Half the thickness of the wall along each side (the thickest one if several share it).
+  const halfOf = (a: Vec, b: Vec) => {
+    let half = 0;
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    for (const w of plan.walls) {
+      const p = pos.get(w.a), q = pos.get(w.b);
+      if (!p || !q || w.divider) continue;
+      const on = (v: Vec) => Math.abs((v.x - a.x) * (b.y - a.y) - (v.y - a.y) * (b.x - a.x)) / L < 0.01;
+      if (!on(p) || !on(q)) continue;
+      const t = (v: Vec) => ((v.x - a.x) * (b.x - a.x) + (v.y - a.y) * (b.y - a.y)) / L;
+      if (Math.min(L, Math.max(t(p), t(q))) - Math.max(0, Math.min(t(p), t(q))) > 0.01) half = Math.max(half, w.thickness / 2);
+    }
+    return half;
+  };
+  const lines = P.map((a, i) => {
+    const b = P[(i + 1) % n];
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L };
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    let inward = { x: -d.y, y: d.x };
+    if (!pointInPolygon({ x: mid.x + inward.x * 0.05, y: mid.y + inward.y * 0.05 }, P)) inward = { x: -inward.x, y: -inward.y };
+    const h = halfOf(a, b);
+    return { p: { x: a.x + inward.x * h, y: a.y + inward.y * h }, d, inward };
+  });
+  // Each inside corner is where the moved-in sides before and after it meet.
+  const polygon = lines.map((l, i) => {
+    const k = lines[(i - 1 + n) % n];
+    const det = k.d.x * l.d.y - k.d.y * l.d.x;
+    if (Math.abs(det) < 1e-9) return l.p;
+    const t = ((l.p.x - k.p.x) * l.d.y - (l.p.y - k.p.y) * l.d.x) / det;
+    return { x: k.p.x + k.d.x * t, y: k.p.y + k.d.y * t };
+  });
+  const sides = polygon.map((a, i) => {
+    const b = polygon[(i + 1) % n];
+    return { a, b, length: Math.hypot(b.x - a.x, b.y - a.y), inward: lines[i].inward };
+  });
+  return { polygon, sides, area: Math.abs(signedArea(polygon)) };
+}
+
+// Inside width (east-west) and depth of a rectangular room, or null if it isn't a rectangle.
+export function insideDimensions(plan: Plan, room: Room): { width: number; depth: number } | null {
+  const { sides } = roomInterior(plan, room);
+  if (sides.length !== 4) return null;
+  const horizontal = sides.filter(s => Math.abs(s.b.x - s.a.x) > Math.abs(s.b.y - s.a.y));
+  const vertical = sides.filter(s => Math.abs(s.b.x - s.a.x) <= Math.abs(s.b.y - s.a.y));
+  if (horizontal.length !== 2 || vertical.length !== 2) return null;
+  return { width: horizontal[0].length, depth: vertical[0].length };
+}
+
 export const roomAt =(rooms: Room[], p: Vec) =>
   [...rooms].sort((a, b) => a.area - b.area).find(r => pointInPolygon(p, r.polygon));

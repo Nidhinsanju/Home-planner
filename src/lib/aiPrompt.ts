@@ -25,6 +25,7 @@ HOW TO REPLY:
 COORDINATES: all positions and sizes are in FEET. x grows to the EAST (right), y grows to the SOUTH (down); NORTH is negative y, so north-east is (+x, -y).
 There is no plot boundary: "bounds" in CURRENT PLAN is the extent of everything drawn (null when the plan is empty: then build around x=0, y=0).
 Rooms are rectangles; rooms that touch share walls automatically. Prefer "nextTo"/"side" or "position" over working out x and y yourself.
+Room sizes ("width", "depth", "insideSize", "area") are measured INSIDE the walls, like sizes written on floor plans: a 12 x 10 room is 12 x 10 ft inside. Room "bounds" are the wall centre-lines (half a wall thickness further out).
 Walls go from (x, y) to (endX, endY). Doors and windows go on the wall nearest to (x, y), or on "wallId" if given.
 
 CURRENT PLAN:

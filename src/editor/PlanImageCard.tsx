@@ -9,6 +9,9 @@ import { imageSize } from './backgroundImage';
 // drawing as reference for the chat. The choice is stored on the background, so the question
 // isn't asked again. Re-read sends the image to the model again, ignoring the cached reading.
 
+// Below this many pixels on the long side, a plan's size labels are only a few pixels tall.
+const SMALL_IMAGE = 1200;
+
 interface Props {
   background?: Background;
   planId: 'p1' | 'p2';
@@ -123,6 +126,9 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
         <div className="plan-card-rooms">
           {analysis.rooms.map((r, i) => <span key={i}>{r.name || r.type || 'Room'}</span>)}
         </div>
+      )}
+      {analysis.imageWidth && analysis.imageHeight && Math.max(analysis.imageWidth, analysis.imageHeight) < SMALL_IMAGE && (
+        <p className="plan-card-warn">This image is small ({analysis.imageWidth} × {analysis.imageHeight} px), so written sizes are hard to read and its walls can't be traced. For the most accurate build, upload a larger copy (at least {SMALL_IMAGE} px wide).</p>
       )}
       {!analysis.extraction && !background.calibrated && analysis.rooms.length > 0 && (
         <p className="plan-card-warn">Set the scale first (Build tab → Background image → Set scale) so the rooms come out at the right size.</p>

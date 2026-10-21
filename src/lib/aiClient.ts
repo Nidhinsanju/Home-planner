@@ -52,7 +52,8 @@ export const aiClient = () => new OpenAI({ baseURL: aiProvider().baseURL, apiKey
 
 // Enough room for a whole plan as JSON. OpenRouter reserves credit for the full amount.
 export const CHAT_MAX_TOKENS = () => Number(process.env.AI_MAX_TOKENS || 8000);
-export const EXTRACT_MAX_TOKENS = () => Number(process.env.EXTRACT_MAX_TOKENS || 12000);
+// Reading a plan takes about 3,000 tokens, but thinking counts towards the limit too.
+export const EXTRACT_MAX_TOKENS = () => Number(process.env.EXTRACT_MAX_TOKENS || 32000);
 // Reasoning effort for reading drawings ("off" to disable). OpenRouter's `reasoning` field.
 export const EXTRACT_REASONING = () => process.env.EXTRACT_REASONING || 'medium';
 
@@ -111,6 +112,11 @@ const noSchema = new Set<string>();
 export const supportsJsonSchema = (model: string) => aiProvider().name !== 'anthropic' && !noSchema.has(model);
 export const markNoJsonSchema = (model: string) => noSchema.add(model);
 
+// Models that reject a reasoning setting (Gemma: "Thinking level is not supported").
+const noReasoning = new Set<string>();
+export const supportsReasoning = (model: string) => !noReasoning.has(model);
+export const markNoReasoning = (model: string) => noReasoning.add(model);
+
 // The reasoning setting in the form the provider accepts (OpenRouter and Gemini only).
 export function reasoningField(effort: string) {
   if (effort === 'off') return {};
@@ -140,9 +146,10 @@ export function imageInfo(dataUrl: string): { bytes: number; width?: number; hei
 }
 
 // One log line per AI request, and a warning if the provider answered with a different model.
-export function logAiCall(kind: string, requested: string, response: { model?: string; choices?: { finish_reason?: string | null }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } | null }, image?: { bytes: number; width?: number; height?: number }) {
+export function logAiCall(kind: string, requested: string, response: { model?: string; choices?: { finish_reason?: string | null }[]; usage?: { prompt_tokens?: number; completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } } | null }, image?: { bytes: number; width?: number; height?: number }) {
   const img = image ? ` image=${image.bytes}B ${image.width ?? '?'}x${image.height ?? '?'}px` : '';
-  console.info(`[ai] ${kind} model=${requested} answered-by=${response.model} finish=${response.choices?.[0]?.finish_reason} tokens=${response.usage?.prompt_tokens ?? '?'}/${response.usage?.completion_tokens ?? '?'}${img}`);
+  const thinking = response.usage?.completion_tokens_details?.reasoning_tokens;
+  console.info(`[ai] ${kind} model=${requested} answered-by=${response.model} finish=${response.choices?.[0]?.finish_reason} tokens=${response.usage?.prompt_tokens ?? '?'}/${response.usage?.completion_tokens ?? '?'}${thinking ? ` (thinking ${thinking})` : ''}${img}`);
   const base = requested.replace(/:free$/, '');
   if (response.model && !response.model.startsWith(base)) {
     console.warn(`[ai] ${kind}: asked for ${requested} but ${response.model} answered (provider fallback?)`);

@@ -3,7 +3,7 @@ import { WALL_DEFAULTS } from './types';
 import { ExtractedRoom, Extraction, labeledSize } from './extraction';
 import type { SetPlanPayload } from './setPlan';
 import { closestOnSegment, pointInPolygon } from './geometry';
-import { DarkMask, DrawingWalls } from './wallMask';
+import { DrawingPixels, DrawingWalls } from './wallMask';
 
 // Step B of building from a drawing, done in code rather than by the AI: turns what the vision
 // model read (pixels) into a plan in feet.
@@ -16,7 +16,7 @@ import { DarkMask, DrawingWalls } from './wallMask';
 // 3. Rooms with no wall between them (openTo) get a room divider; doors, windows and the
 //    entry are placed at their points on the nearest wall.
 //
-// With the drawing's pixels (a DarkMask, see wallMask.ts) two steps use the image itself:
+// With the drawing's pixels (see wallMask.ts) two steps use the image itself:
 // before 1, each room edge is moved onto the inside face of the wall drawn nearest to it (the
 // model's boxes are often a foot or two off), and in 3, every room side where the drawing has
 // no wall becomes a divider (open), whatever the model said, while exterior sides stay walls.
@@ -173,7 +173,7 @@ function alignToWalls(ex: Extraction, walls: DrawingWalls, pxPerFt: number): { e
   };
 }
 
-export function layoutFromExtraction(ex: Extraction, image: { width: number; height: number }, thickness = WALL_DEFAULTS.thickness, mask?: DarkMask): DrawingLayout | { error: string } {
+export function layoutFromExtraction(ex: Extraction, image: { width: number; height: number }, thickness = WALL_DEFAULTS.thickness, mask?: DrawingPixels): DrawingLayout | { error: string } {
   // 1. Scale.
   let estimates = ex.rooms.map(r => ({ r, o: orientation(r) })).filter(e => e.o);
   if (estimates.length === 0) {
@@ -182,7 +182,8 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
   let pxPerFt = median(estimates.map(e => e.o!.scale));
   // With the image: line the rooms up with its walls, then measure the scale again from the
   // rooms' true inside sizes.
-  const walls = mask && mask.width === image.width && mask.height === image.height ? DrawingWalls.of(mask, pxPerFt) : null;
+  const found = mask && mask.width === image.width && mask.height === image.height ? DrawingWalls.of(mask, pxPerFt) : null;
+  const walls = found?.usable ? found : null;
   let faces: Faces[] | null = null;
   if (walls) {
     ({ ex, faces } = alignToWalls(ex, walls, pxPerFt));
@@ -205,8 +206,28 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
   const isPolygon = (r: ExtractedRoom) => !!r.polygonPx && r.polygonPx.length >= 3 && r.polygonPx.length !== 4;
   const builtAsDrawn = new Set<string>(); // rooms whose written size doesn't match the drawing
 
+  // The straight edges of L-shaped and other polygon rooms, widened to wall centre-lines: they
+  // are solved together with the rectangles' edges, so a polygon room shares its walls with its
+  // neighbours instead of getting a second wall beside theirs. 'x' = vertical edges.
+  const polyEdges = (ax: 'x' | 'y') => ex.rooms.flatMap((r, room) => {
+    if (!isPolygon(r)) return [];
+    const P = r.polygonPx!;
+    const poly = P.map(p => ({ x: p[0], y: p[1] }));
+    return P.flatMap((a, edge) => {
+      const b = P[(edge + 1) % P.length];
+      const k = ax === 'x' ? 0 : 1;
+      if (Math.abs(a[k] - b[k]) > 3 || Math.abs(a[1 - k] - b[1 - k]) < pxPerFt * 0.5) return [];
+      const at = (a[k] + b[k]) / 2;
+      const mid = ax === 'x' ? { x: at + 2, y: (a[1] + b[1]) / 2 } : { x: (a[0] + b[0]) / 2, y: at + 2 };
+      const outward = pointInPolygon(mid, poly) ? -1 : 1;
+      return [{ room, edge, at: toFt(ax === 'x' ? [at, 0] : [0, at])[ax] + outward * half }];
+    });
+  });
+
   const axis =(lo: 'minX' | 'minY', hi: 'maxX' | 'maxY', size: 'across' | 'down') => {
-    const values = rects.flatMap(q => [q[lo], q[hi]]);
+    const extra = polyEdges(size === 'across' ? 'x' : 'y');
+    const base = 2 * rects.length;
+    const values = [...rects.flatMap(q => [q[lo], q[hi]]), ...extra.map(e => e.at)];
     const { group, count } = clusterValues(values);
     const line = [...group];
     let lineCount = count;
@@ -245,7 +266,7 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
     }
     // How much each box edge holds its position: a wall seen on the image holds firm, an open
     // side (no wall drawn) gives way to the written size; without the image all count the same.
-    const weight = (k: number) => (!faces ? 1 : faces[k >> 1][size === 'across' ? 'x' : 'y'][k & 1] ? FOUND_WEIGHT : OPEN_WEIGHT);
+    const weight = (k: number) => (!faces || k >= base ? 1 : faces[k >> 1][size === 'across' ? 'x' : 'y'][k & 1] ? FOUND_WEIGHT : OPEN_WEIGHT);
     const solve = () => solveAxis(lineCount, values.map((at, k) => ({ line: line[k], at, weight: weight(k) })), spans.map(s => ({ a: line[2 * s.room], b: line[2 * s.room + 1], length: s.length })));
     let pos = solve();
     // Rooms still more than 6 in off their written size (loose boxes pulling shared wall lines
@@ -258,7 +279,26 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
       if (lineCount === before) break;
       pos = solve();
     }
-    return { lines: pos, at: (i: number, end: 0 | 1) => pos[line[2 * i + end]] };
+    // Lines closer than a wall's thickness are one wall seen from both sides (a wall drawn
+    // thicker than ours, or written sizes that disagree by an inch or two): they become one,
+    // so no second wall is built right beside the first.
+    const order = pos.map((p, k) => k).sort((a, b) => pos[a] - pos[b]);
+    for (let g = 0; g < order.length;) {
+      let e = g + 1;
+      while (e < order.length && pos[order[e]] - pos[order[e - 1]] < thickness + 0.1) e++;
+      if (e - g > 1) {
+        const mean = order.slice(g, e).reduce((t, k) => t + pos[k], 0) / (e - g);
+        for (const k of order.slice(g, e)) pos[k] = mean;
+      }
+      g = e;
+    }
+    const edgeAt = new Map(extra.map((e, n) => [`${e.room}|${e.edge}`, base + n]));
+    return {
+      lines: pos,
+      at: (i: number, end: 0 | 1) => pos[line[2 * i + end]],
+      // The solved position of a polygon room's straight edge, if it is one.
+      edge: (room: number, edge: number) => (edgeAt.has(`${room}|${edge}`) ? pos[line[edgeAt.get(`${room}|${edge}`)!]] : undefined),
+    };
   };
   const X = axis('minX', 'maxX', 'across');
   const Y = axis('minY', 'maxY', 'down');
@@ -271,7 +311,12 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
 
   const polygons: Vec[][] = ex.rooms.map((r, i) => {
     if (isPolygon(r)) {
-      return r.polygonPx!.map(p => toFt(p)).map(p => ({ x: snap(X.lines, p.x), y: snap(Y.lines, p.y) }));
+      // Each corner takes the solved position of the straight edges it is on.
+      const n = r.polygonPx!.length;
+      return r.polygonPx!.map(p => toFt(p)).map((p, j) => ({
+        x: X.edge(i, j) ?? X.edge(i, (j + n - 1) % n) ?? snap(X.lines, p.x),
+        y: Y.edge(i, j) ?? Y.edge(i, (j + n - 1) % n) ?? snap(Y.lines, p.y),
+      }));
     }
     const x1 = X.at(i, 0), x2 = X.at(i, 1), y1 = Y.at(i, 0), y2 = Y.at(i, 1);
     return [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }];

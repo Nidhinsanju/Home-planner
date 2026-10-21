@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Item, itemSize, itemSpec, Plan, roomType, UNNAMED_ROOM_COLOR, Vec, Wall, getRoomColor } from '../plan/types';
 import { FurnitureSymbol } from './FurnitureSymbol';
-import { detectRooms, detectSpaces, Room, roomAt } from '../plan/rooms';
+import { detectRooms, detectSpaces, Room, roomAt, roomInterior } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
@@ -87,6 +87,8 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
   const shown = draft ?? plan;
   const shownSpaces = useMemo(() => (draft ? detectSpaces(draft) : spaces), [draft, spaces]);
   const shownRooms = shownSpaces.filter(r => r.label);
+  // Rooms measured inside their walls: the sizes and areas shown, like those written on plans.
+  const interiors = useMemo(() => new Map(shownSpaces.filter(r => r.label).map(r => [r.key, roomInterior(shown, r)])), [shownSpaces, shown]);
   const bg = shown.background;
   const emptySpaces = shownSpaces.filter(r => !r.label);
   const px = (n: number) => n / view.scale;
@@ -460,12 +462,15 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
 
   const vb = `${view.cx - size.w / 2 / view.scale} ${view.cy - size.h / 2 / view.scale} ${size.w / view.scale} ${size.h / view.scale}`;
   const selRoom = selection?.kind === 'room' ? shownRooms.find(r => r.id === selection.id) : undefined;
+  // Dimensions: each room's inside sides (all rooms, or the selected one), and the length of
+  // walls that belong to no room and of the selected or hovered wall.
+  const roomWalls = new Set(shownRooms.flatMap(r => r.wallIds));
   const dimWalls = new Set<string>([
-    ...(showDims ? shown.walls.filter(w => ops.wallLength(shown, w) * view.scale > 40).map(w => w.id) : []),
+    ...(showDims ? shown.walls.filter(w => !roomWalls.has(w.id) && ops.wallLength(shown, w) * view.scale > 40).map(w => w.id) : []),
     ...(selection?.kind === 'wall' ? [selection.id] : []),
     ...(hover?.kind === 'wall' ? [hover.id] : []),
-    ...(selRoom ? selRoom.wallIds : []),
   ]);
+  const dimRooms = showDims ? shownRooms : selRoom ? [selRoom] : [];
   const gridStep = unit === 'mt' ? 3.28084 : 1;
   const major = gridStep * 5;
   const fs = px(12);
@@ -474,7 +479,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
   const hoverWall = (tool === 'door' || tool === 'window') && cursor ? wallUnder(cursor) : null;
   const hoverItem = tool.startsWith('item:') && cursor ? itemSpec(tool.slice(5)) : undefined;
 
-  const totalBuiltArea = useMemo(() => shownRooms.reduce((sum, r) => sum + r.area, 0), [shownRooms]);
+  const totalRoomArea = [...interiors.values()].reduce((sum, r) => sum + r.area, 0);
 
   const lengthLabel = (a: Vec, b: Vec, offset: number, key: string, color = '#1e293b') => {
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -487,6 +492,20 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
       <text key={key} x={p.x} y={p.y} fontSize={fs * 0.85} fontWeight={600} fill={color} textAnchor="middle" dominantBaseline="middle"
         transform={`rotate(${ang} ${p.x} ${p.y})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
         {formatLength(dist(a, b), unit)}
+      </text>
+    );
+  };
+
+  // A room's inside side length, written just inside the room along that side.
+  const insideLabel = (side: { a: Vec; b: Vec; inward: Vec }, key: string) => {
+    const mid = { x: (side.a.x + side.b.x) / 2, y: (side.a.y + side.b.y) / 2 };
+    const p = { x: mid.x + side.inward.x * px(9), y: mid.y + side.inward.y * px(9) };
+    let ang = (Math.atan2(side.b.y - side.a.y, side.b.x - side.a.x) * 180) / Math.PI;
+    if (ang > 90 || ang < -90) ang += 180;
+    return (
+      <text key={key} x={p.x} y={p.y} fontSize={fs * 0.8} fontWeight={600} fill="#334155" textAnchor="middle" dominantBaseline="middle"
+        transform={`rotate(${ang} ${p.x} ${p.y})`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
+        {formatLength(dist(side.a, side.b), unit)}
       </text>
     );
   };
@@ -604,7 +623,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
               {r.label?.name || roomType(r.label?.type)?.name || 'Room'}
             </text>
             <text x={r.center.x} y={r.center.y + fs * 0.75} fontSize={fs * 0.8} fontWeight={500} fill="#475569" textAnchor="middle">
-              {formatArea(r.area, unit)}
+              {formatArea(interiors.get(r.key)?.area ?? r.area, unit)}
             </text>
           </g>
         ))}
@@ -616,6 +635,9 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         ))}
 
         {/* Dimensions */}
+        {dimRooms.flatMap(r => (interiors.get(r.key)?.sides ?? [])
+          .filter(sd => sd.length * view.scale > 40)
+          .map((sd, i) => insideLabel(sd, `rdim-${r.key}-${i}`)))}
         {shown.walls.filter(w => dimWalls.has(w.id)).map(w => {
           const { a, b } = ops.wallEnds(shown, w);
           return lengthLabel(a, b, w.thickness / 2 + px(10), `dim-${w.id}`);
@@ -825,8 +847,8 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           <Layers size={18} />
         </div>
         <div className="area-card-text">
-          <span className="area-card-label">Total Built Area</span>
-          <span className="area-card-value">{formatArea(totalBuiltArea, unit)}</span>
+          <span className="area-card-label">Total Room Area</span>
+          <span className="area-card-value">{formatArea(totalRoomArea, unit)}</span>
         </div>
       </div>
 

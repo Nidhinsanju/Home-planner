@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Grid } from '@react-three/drei';
 import type { ThreeEvent } from '@react-three/fiber';
 import { itemSize, itemSpec, Opening, Plan, roomType, UNNAMED_ROOM_COLOR, Wall } from '../plan/types';
-import { Room, roomDimensions } from '../plan/rooms';
+import { insideDimensions, Room, roomInterior } from '../plan/rooms';
 import { wallEnds } from '../plan/ops';
 import { formatArea, formatDimensions, DisplayUnit } from '../units';
 import type { Selection } from './Editor2D';
@@ -44,7 +44,7 @@ export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Prop
         sectionSize={unit === 'mt' ? 3.28084 * 5 : 5} sectionThickness={1} sectionColor="#aeb3ba" fadeDistance={160} fadeStrength={1} />
 
       {rooms.map(r => (
-        <RoomFloor key={r.key} room={r} unit={unit} selected={isSel('room', r.id)} labelHeight={cutaway ? CUTAWAY_HEIGHT + 2 : 2}
+        <RoomFloor key={r.key} plan={plan} room={r} unit={unit} selected={isSel('room', r.id)} labelHeight={cutaway ? CUTAWAY_HEIGHT + 2 : 2}
           onClick={e => { if (!isClick(e)) return; e.stopPropagation(); onSelect({ kind: 'room', id: r.id }); }} />
       ))}
 
@@ -70,7 +70,7 @@ export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Prop
   );
 }
 
-function RoomFloor({ room, unit, selected, labelHeight, onClick }: { room: Room; unit: DisplayUnit; selected: boolean; labelHeight: number; onClick: (e: ThreeEvent<MouseEvent>) => void }) {
+function RoomFloor({ plan, room, unit, selected, labelHeight, onClick }: { plan: Plan; room: Room; unit: DisplayUnit; selected: boolean; labelHeight: number; onClick: (e: ThreeEvent<MouseEvent>) => void }) {
   const geometry = useMemo(() => floorGeometry(room.polygon), [room.polygon]);
   // Pastel plan colours wash out under 3D lighting; deepen them a little for the floor.
   const color = useMemo(() => '#' + new THREE.Color(roomType(room.label?.type)?.color ?? UNNAMED_ROOM_COLOR).offsetHSL(0, 0.2, -0.1).getHexString(), [room.label?.type]);
@@ -80,15 +80,15 @@ function RoomFloor({ room, unit, selected, labelHeight, onClick }: { room: Room;
       <mesh geometry={geometry} position={[0, 0.05, 0]} receiveShadow onClick={onClick}>
         <meshStandardMaterial color={selected ? '#9cc0fa' : color} roughness={1} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
       </mesh>
-      <SpriteLabel text={`${name}\n${roomSize(room, unit)}`} x={room.center.x} y={labelHeight} z={room.center.y} />
+      <SpriteLabel text={`${name}\n${roomSize(plan, room, unit)}`} x={room.center.x} y={labelHeight} z={room.center.y} />
     </group>
   );
 }
 
-// Rectangular rooms show "a × b"; irregular (L-shaped, angled) rooms fall back to their area.
-function roomSize(room: Room, unit: DisplayUnit) {
-  const dims = roomDimensions(room);
-  return dims ? formatDimensions(dims.width, dims.depth, unit) : formatArea(room.area, unit);
+// Inside sizes: rectangular rooms show "a × b"; irregular (L-shaped, angled) rooms their area.
+function roomSize(plan: Plan, room: Room, unit: DisplayUnit) {
+  const dims = insideDimensions(plan, room);
+  return dims ? formatDimensions(dims.width, dims.depth, unit) : formatArea(roomInterior(plan, room).area, unit);
 }
 
 // Floor polygon directly in world XZ. Every triangle is wound to face up (+y) with explicit

@@ -7,7 +7,7 @@ import {
   Search, Eye, MoreVertical, Plus
 } from 'lucide-react';
 import { ITEM_CATALOG, itemSize, itemSpec, MIN_ITEM_SIZE, Plan, ROOM_TYPES, roomType, getRoomColor } from '../plan/types';
-import type { Room } from '../plan/rooms';
+import { roomInterior, type Room } from '../plan/rooms';
 import * as ops from '../plan/ops';
 import { lerp } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, round2, toDisplay } from '../units';
@@ -136,6 +136,7 @@ export function Sidebar(props: Props) {
         </div>
       ) : (
         <ProjectPanel
+          plan={plan}
           rooms={rooms}
           unit={unit}
           readOnly={readOnly}
@@ -211,11 +212,13 @@ function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan
   );
 }
 
-function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, setSelection, selection }: {
-  rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void; selection?: Selection;
+function ProjectPanel({ plan, rooms, unit, readOnly, activePlanIndex, onSwitchPlan, setSelection, selection }: {
+  plan: Plan; rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void; selection?: Selection;
 }) {
   const [search, setSearch] = useState('');
-  const total = rooms.reduce((s, r) => s + r.area, 0);
+  // Areas inside the walls, like the sizes written on plans.
+  const areas = new Map(rooms.map(r => [r.key, roomInterior(plan, r).area]));
+  const total = [...areas.values()].reduce((s, a) => s + a, 0);
   const filtered = rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -248,7 +251,7 @@ function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, se
 
       <div className="rooms-header-block">
         <h3 className="rooms-header-title">Rooms ({rooms.length})</h3>
-        <p className="rooms-header-sub">Built area {formatArea(total, unit)}</p>
+        <p className="rooms-header-sub">Room area {formatArea(total, unit)}</p>
         <div className="search-rooms-box">
           <Search size={14} color="#94a3b8" />
           <input
@@ -274,7 +277,7 @@ function ProjectPanel({ rooms, unit, readOnly, activePlanIndex, onSwitchPlan, se
             <span className="room-item-name">
               {r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room'}
             </span>
-            <span className="room-item-area">{formatArea(r.area, unit)}</span>
+            <span className="room-item-area">{formatArea(areas.get(r.key) ?? r.area, unit)}</span>
             <div className="room-item-actions">
               <button
                 className="room-item-btn"
@@ -314,10 +317,11 @@ function QuickRoom({ plan, unit, wallDims, onCommit }: { plan: Plan; unit: Displ
     if (plan.corners.length) {
       const maxX = Math.max(...plan.corners.map(c => c.x));
       const minY = Math.min(...plan.corners.map(c => c.y));
-      x = maxX + width / 2;
-      y = minY + depth / 2;
+      x = maxX + (width + wallDims.thickness) / 2;
+      y = minY + (depth + wallDims.thickness) / 2;
     }
-    onCommit(ops.addRectRoom(plan, { x, y, width, depth }, wallDims, { name: roomType(type)?.name ?? 'Room', type }));
+    // The size typed is the inside size; walls are drawn on their centre-lines.
+    onCommit(ops.addRectRoom(plan, { x, y, width: width + wallDims.thickness, depth: depth + wallDims.thickness }, wallDims, { name: roomType(type)?.name ?? 'Room', type }));
   };
   return (
     <div className="sidebar-section">
@@ -350,7 +354,8 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
   if (selection.kind === 'room') {
     const room = rooms.find(r => r.id === selection.id);
     if (!room) return <>{back}<p className="muted">Room not found.</p></>;
-    const perimeter = room.polygon.reduce((s, p, i) => s + Math.hypot(room.polygon[(i + 1) % room.polygon.length].x - p.x, room.polygon[(i + 1) % room.polygon.length].y - p.y), 0);
+    const inside = roomInterior(plan, room);
+    const perimeter = inside.sides.reduce((s, sd) => s + sd.length, 0);
     return (
       <div className="sidebar-section">
         {back}
@@ -365,7 +370,7 @@ function Inspector({ plan, rooms, spaces, unit, selection, setSelection, onCommi
               {ROOM_TYPES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
-          <p className="muted">Area {formatArea(room.area, unit)} · Perimeter {formatLength(perimeter, unit)} · {room.wallIds.length} walls</p>
+          <p className="muted">Area {formatArea(inside.area, unit)} · Perimeter {formatLength(perimeter, unit)} · {room.wallIds.length} walls</p>
           <p className="muted">Resize a room by dragging its walls or corners on the plan.</p>
           <button className="secondary-btn" onClick={() => { onCommit(ops.unmarkRoom(plan, room)); setSelection(null); }}>Keep walls, remove room</button>
           <DangerButton onClick={() => { onCommit(ops.deleteRoom(plan, room)); setSelection(null); }}>Delete room & walls</DangerButton>

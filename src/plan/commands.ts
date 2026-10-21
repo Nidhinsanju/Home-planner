@@ -6,7 +6,7 @@ import {
   moveOpeningTo, moveRoom, offsetWall, openingCenter, resizeItem, setRoomLabel, updateItem, updateOpening, updateWall, wallEnds,
   wallLength,
 } from './ops';
-import { detectRooms } from './rooms';
+import { detectRooms, insideDimensions, roomInterior } from './rooms';
 import { add, closestOnSegment, dist, lerp, sub, dot } from './geometry';
 
 // Interprets the JSON commands produced by the AI assistant against a Plan. All coordinates
@@ -56,11 +56,14 @@ export function describePlan(plan: Plan) {
     rooms: rooms.map(r => {
       const xs = r.polygon.map(p => p.x);
       const ys = r.polygon.map(p => p.y);
+      const inside = insideDimensions(plan, r);
       return {
         id: r.id,
         name: r.label?.name || '',
         type: r.label?.type || '',
-        area: r1(r.area),
+        // Inside the walls, as sizes are written on plans; bounds are wall centre-lines.
+        ...(inside ? { insideSize: `${r1(inside.width)} x ${r1(inside.depth)}` } : {}),
+        area: r1(roomInterior(plan, r).area),
         center: { x: r1(r.center.x), y: r1(r.center.y) },
         bounds: { minX: r1(Math.min(...xs)), minY: r1(Math.min(...ys)), maxX: r1(Math.max(...xs)), maxY: r1(Math.max(...ys)) },
       };
@@ -193,7 +196,9 @@ export function applyCommand(plan: Plan, cmd: BuildCommand): { plan: Plan; error
       if (type === 'room' || roomAsType) {
         const roomType = normalizeRoomType(cmd.roomType ?? (roomAsType || cmd.name));
         const name = cmd.name ? String(cmd.name) : ROOM_TYPES.find(r => r.id === roomType)?.name || 'Room';
-        const width = Math.max(2, num(cmd.width, 10)), depth = Math.max(2, num(cmd.depth, 10));
+        // The size asked for is the inside size; walls are drawn on their centre-lines.
+        const t = WALL_DEFAULTS.thickness;
+        const width = Math.max(2, num(cmd.width, 10)) + t, depth = Math.max(2, num(cmd.depth, 10)) + t;
         const placed = placeRoom(plan, cmd, width, depth);
         if ('error' in placed) return { plan, error: placed.error };
         return { plan: addRectRoom(plan, { ...placed, width, depth }, WALL_DEFAULTS, { name, type: roomType }) };

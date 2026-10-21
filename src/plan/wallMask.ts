@@ -6,31 +6,33 @@
 //     hallway), instead of walling every room in.
 // Walls are the thick dark strokes: text, door swings, furniture, counters and window lines are
 // thin and are filtered out (a morphological opening: only dark pixels inside a dark square at
-// least about 2.2 in across are kept).
+// least about 2.2 in across are kept). Drawings whose walls are only thin outlines (with light
+// hatching between) show no walls this way; `usable` is then false and the image isn't used.
 
-// Dark pixels of the drawing (1 = dark), at the size the vision model read it.
-export type DarkMask = { width: number; height: number; data: Uint8Array };
+// The drawing's pixels as brightness (0 = black, 255 = white), at the size the model read it.
+export type DrawingPixels = { width: number; height: number; luma: Uint8Array };
 
-// Masks by image source, filled in by the editor when an image is loaded (decoding needs the
+// Pixels by image source, filled in by the editor when an image is loaded (decoding needs the
 // browser), so building from the drawing can stay synchronous.
-const masks = new Map<string, DarkMask>();
-export const setDrawingMask = (src: string, mask: DarkMask) => {
+const masks = new Map<string, DrawingPixels>();
+export const setDrawingMask = (src: string, pixels: DrawingPixels) => {
   masks.clear(); // only the current drawing is needed
-  masks.set(src, mask);
+  masks.set(src, pixels);
 };
 export const drawingMask = (src: string | undefined) => (src ? masks.get(src) : undefined);
 
-// Dark pixels from RGBA image data (what a canvas gives).
-export function darkMaskFromRGBA(rgba: ArrayLike<number>, width: number, height: number, threshold = 110): DarkMask {
-  const data = new Uint8Array(width * height);
-  for (let i = 0; i < data.length; i++) {
+// Brightness from RGBA image data (what a canvas gives). Transparent counts as white.
+export function pixelsFromRGBA(rgba: ArrayLike<number>, width: number, height: number): DrawingPixels {
+  const luma = new Uint8Array(width * height);
+  for (let i = 0; i < luma.length; i++) {
     const a = rgba[i * 4 + 3] / 255;
-    // Transparent counts as white.
-    const luma = (0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]) * a + 255 * (1 - a);
-    data[i] = luma < threshold ? 1 : 0;
+    luma[i] = Math.round((0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2]) * a + 255 * (1 - a));
   }
-  return { width, height, data };
+  return { width, height, luma };
 }
+
+const DARK = 110; // solid wall strokes
+const MIN_WALL_SHARE = 0.003; // less of the image than this as wall: walls aren't drawn solid
 
 // Summed-area table of a 0/1 image: sum over any rectangle in constant time.
 function integral(data: Uint8Array, w: number, h: number) {
@@ -44,47 +46,65 @@ function integral(data: Uint8Array, w: number, h: number) {
   }
   return S;
 }
+const rectSum = (S: Int32Array, w: number, x0: number, y0: number, x1: number, y1: number) =>
+  S[y1 * (w + 1) + x1] - S[y0 * (w + 1) + x1] - S[y1 * (w + 1) + x0] + S[y0 * (w + 1) + x0];
 
-// Built wall maps by mask and stroke size: the plan description for the chat lays the drawing
-// out again on every change, and building the map takes tens of milliseconds.
-const built = new WeakMap<DarkMask, Map<number, DrawingWalls>>();
+// Pixels that lie in an s x s square of set pixels (opening: thinner strokes are removed).
+function opening(data: Uint8Array, w: number, h: number, s: number) {
+  const D = integral(data, w, h);
+  const anchor = new Uint8Array(w * h);
+  for (let y = 0; y + s <= h; y++) for (let x = 0; x + s <= w; x++) if (rectSum(D, w, x, y, x + s, y + s) === s * s) anchor[y * w + x] = 1;
+  const A = integral(anchor, w, h);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[y * w + x] && rectSum(A, w, Math.max(0, x - s + 1), Math.max(0, y - s + 1), x + 1, y + 1) > 0) out[y * w + x] = 1;
+    }
+  }
+  return out;
+}
+
+const threshold = (luma: Uint8Array, below: number) => {
+  const out = new Uint8Array(luma.length);
+  for (let i = 0; i < luma.length; i++) out[i] = luma[i] < below ? 1 : 0;
+  return out;
+};
+const share = (data: Uint8Array) => {
+  let n = 0;
+  for (let i = 0; i < data.length; i++) n += data[i];
+  return n / data.length;
+};
+
+// Built wall maps by drawing and stroke size: the plan description for the chat lays the
+// drawing out again on every change, and building the map takes tens of milliseconds.
+const built = new WeakMap<DrawingPixels, Map<number, DrawingWalls>>();
 
 export class DrawingWalls {
   readonly width: number;
   readonly height: number;
+  // Whether the drawing's walls were found: false for drawings whose walls are only outlined,
+  // or too small to see; building then relies on what the model read alone.
+  readonly usable: boolean;
   private S: Int32Array;
 
   // The wall map of a drawing. `pxPerFt` sets the smallest stroke counted as a wall (about
   // 2.2 in, between 3 and 12 px): thin enough for balcony and closet walls, thicker than text
   // and furniture lines.
-  static of(mask: DarkMask, pxPerFt: number): DrawingWalls {
+  static of(pixels: DrawingPixels, pxPerFt: number): DrawingWalls {
     const s = Math.max(3, Math.min(12, Math.round(pxPerFt / 5.5)));
-    let bySize = built.get(mask);
-    if (!bySize) built.set(mask, (bySize = new Map()));
+    let bySize = built.get(pixels);
+    if (!bySize) built.set(pixels, (bySize = new Map()));
     let walls = bySize.get(s);
-    if (!walls) bySize.set(s, (walls = new DrawingWalls(mask, s)));
+    if (!walls) bySize.set(s, (walls = new DrawingWalls(pixels, s)));
     return walls;
   }
 
-  private constructor(mask: DarkMask, s: number) {
-    const { width: w, height: h, data } = mask;
+  private constructor(pixels: DrawingPixels, s: number) {
+    const { width: w, height: h, luma } = pixels;
     this.width = w;
     this.height = h;
-    // Erosion: a pixel anchors an s x s square that is all dark.
-    const D = integral(data, w, h);
-    const sum = (S: Int32Array, x0: number, y0: number, x1: number, y1: number) =>
-      S[y1 * (w + 1) + x1] - S[y0 * (w + 1) + x1] - S[y1 * (w + 1) + x0] + S[y0 * (w + 1) + x0];
-    const anchor = new Uint8Array(w * h);
-    for (let y = 0; y + s <= h; y++) for (let x = 0; x + s <= w; x++) if (sum(D, x, y, x + s, y + s) === s * s) anchor[y * w + x] = 1;
-    // Dilation: a pixel is wall if a square anchored within s-1 px up/left of it covers it.
-    const A = integral(anchor, w, h);
-    const wall = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (!data[y * w + x]) continue;
-        if (sum(A, Math.max(0, x - s + 1), Math.max(0, y - s + 1), x + 1, y + 1) > 0) wall[y * w + x] = 1;
-      }
-    }
+    const wall = opening(threshold(luma, DARK), w, h, s);
+    this.usable = share(wall) >= MIN_WALL_SHARE;
     this.S = integral(wall, w, h);
   }
 

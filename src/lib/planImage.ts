@@ -5,7 +5,7 @@ import { fromWire, toPixelSpace, WIRE_JSON_SCHEMA, WireSchema, type Extraction }
 import { formatIssues } from '../plan/setPlan';
 import { EXTRACTION_VERSION, extractionPrompt } from './aiPrompt';
 import { ImageRead } from './db';
-import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, markNoJsonSchema, reasoningField, supportsJsonSchema, TryNextModel, withModels } from './aiClient';
+import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
 
 // Step A of building from a drawing: the vision model gets the uploaded floor plan itself (at
 // the size it was uploaded, up to 2000 px, so the written sizes stay legible) and reads it into
@@ -80,11 +80,11 @@ async function extract(image: string, width: number, height: number, info: Retur
   }
 }
 
+const MAX_TOKENS_CEILING = 65_536; // the most a retry after a cut-off answer may ask for
+
 // One model's attempt, with up to MAX_RETRIES corrections. Throws (so the next model is
 // tried) on provider errors, or TryNextModel when its answers stay unusable.
 async function extractWith(model: string, image: string, width: number, height: number, info: ReturnType<typeof imageInfo>, signal?: AbortSignal): Promise<PlanImageResult> {
-  const maxTokens = EXTRACT_MAX_TOKENS();
-  const reasoning = EXTRACT_REASONING();
   const space = coordinateSpace();
   const messages: any[] = [{
     role: 'user',
@@ -93,36 +93,63 @@ async function extractWith(model: string, image: string, width: number, height: 
       { type: 'text', text: extractionPrompt(width, height, space) },
     ],
   }];
-  const request = (schema: boolean) => aiClient().chat.completions.create(
+  // What this model is asked with; adjusted when it rejects an option or runs out of tokens.
+  const opts = { maxTokens: EXTRACT_MAX_TOKENS(), reasoning: supportsReasoning(model) ? EXTRACT_REASONING() : 'off', schema: supportsJsonSchema(model) };
+  const request = () => aiClient().chat.completions.create(
     {
       model,
-      max_tokens: maxTokens,
+      max_tokens: opts.maxTokens,
       messages,
-      ...(reasoning !== 'off' ? (reasoningField(reasoning) as object) : { temperature: 0 }),
-      ...(schema ? { response_format: { type: 'json_schema' as const, json_schema: { name: 'floor_plan', strict: true, schema: WIRE_JSON_SCHEMA } } } : {}),
+      ...(opts.reasoning !== 'off' ? (reasoningField(opts.reasoning) as object) : { temperature: 0 }),
+      ...(opts.schema ? { response_format: { type: 'json_schema' as const, json_schema: { name: 'floor_plan', strict: true, schema: WIRE_JSON_SCHEMA } } } : {}),
     },
     { signal },
   );
+  // A model that rejects the reasoning setting or the response schema (400) is asked again
+  // without it, and remembered; the prompt describes the shape anyway.
+  const send = async () => {
+    for (;;) {
+      try {
+        return await request();
+      } catch (error: any) {
+        if (error?.status !== 400 || signal?.aborted) throw error;
+        const message = String(error?.message ?? '');
+        if (opts.reasoning !== 'off' && /think|reason/i.test(message)) {
+          console.warn(`[ai] read-plan: ${model} doesn't take a reasoning setting; asking without it`);
+          markNoReasoning(model);
+          opts.reasoning = 'off';
+        } else if (opts.schema) {
+          console.warn(`[ai] read-plan: ${model} rejected the response schema (${message.slice(0, 120)}); asking without it`);
+          markNoJsonSchema(model);
+          opts.schema = false;
+        } else {
+          throw error;
+        }
+      }
+    }
+  };
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    let response;
-    const schema = supportsJsonSchema(model);
-    try {
-      response = await request(schema);
-    } catch (error: any) {
-      // A model that won't take the schema is asked again without it (the prompt has the shape).
-      if (!schema || error?.status !== 400 || signal?.aborted) throw error;
-      console.warn(`[ai] read-plan: ${model} rejected the response schema (${String(error?.message).slice(0, 120)}); asking without it`);
-      markNoJsonSchema(model);
-      response = await request(false);
-    }
+    let response = await send();
     if (signal?.aborted) return { aborted: true };
     logAiCall(`read-plan#${attempt + 1}`, model, response, info);
 
-    const choice = response.choices[0];
-    if (choice?.finish_reason === 'length') {
-      return { error: `The AI's answer was cut off at ${maxTokens} tokens before the plan was complete. Raise EXTRACT_MAX_TOKENS in .env.` };
+    // Cut off: thinking counts towards the limit, and a model now and then repeats itself
+    // until it runs out. Asked once more with twice the room and less thinking; if that is
+    // cut off too, the next model is tried.
+    if (response.choices[0]?.finish_reason === 'length') {
+      const before = opts.maxTokens;
+      opts.maxTokens = Math.min(MAX_TOKENS_CEILING, before * 2);
+      if (opts.reasoning !== 'off') opts.reasoning = 'low';
+      console.warn(`[ai] read-plan: ${model} was cut off at ${before} tokens; asking again with ${opts.maxTokens}`);
+      response = await send();
+      if (signal?.aborted) return { aborted: true };
+      logAiCall(`read-plan#${attempt + 1}-retry`, model, response, info);
+      if (response.choices[0]?.finish_reason === 'length') {
+        throw new TryNextModel(`The AI's answer was cut off at ${opts.maxTokens} tokens before the plan was complete (it may have got stuck repeating itself). Try Re-read.`);
+      }
     }
+    const choice = response.choices[0];
     const text = choice?.message.content ?? '';
     const raw = extractJson(text);
     const parsed = raw ? WireSchema.safeParse(raw) : null;
