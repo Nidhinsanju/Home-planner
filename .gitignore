@@ -6,11 +6,13 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
 node_modules
 dist
 dist-ssr
+.next
+out
 *.local
+.env*
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +24,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AI training data & scripts
+/training-data/
+/training-data.zip
+/.training-build/
+train_kaggle.py
+.kaggle
