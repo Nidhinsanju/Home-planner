@@ -11,6 +11,7 @@ import { PlanImageCard } from './editor/PlanImageCard';
 import { looksLikePlan, parseJsonText } from './plan/importPlan';
 import { readAiResponse } from './lib/aiStreamClient';
 import { toast } from './Toasts';
+import { aiHeaders } from './lib/deviceHints';
 
 export const NavRail = ({
   activeNav = 'plans',
@@ -457,11 +458,13 @@ export const ChatSidebar = React.memo(function ChatSidebar({
     const stale = () => controller.signal.aborted || activePlanRef.current !== sentFromPlan;
     const token = localStorage.getItem('token') || '';
 
+    // The message's turn: the planner and its steps are part of this message (one AI prompt).
+    let turn: string | undefined;
     const post = async (text: string, mode: 'auto' | 'cloud' | 'step') => {
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode, image: imageRef.current }),
+        headers: aiHeaders(token),
+        body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode, image: imageRef.current, turn }),
         signal: controller.signal,
       });
       // Live updates ("the AI is busy, trying the next model…") as toasts while it works.
@@ -471,6 +474,7 @@ export const ChatSidebar = React.memo(function ChatSidebar({
     try {
       let res = await post(prompt, 'auto');
       if (stale() || res.aborted) return;
+      if (typeof res.turn === 'string') turn = res.turn;
 
       const report = async (change: AiChange) => {
         abortRef.current = null;
@@ -495,6 +499,7 @@ export const ChatSidebar = React.memo(function ChatSidebar({
       }
       if (res.error) {
         if (res.busy) say(res.error, { retry: prompt, busy: true });
+        else if (res.limit) say(res.error);
         else say("Error: " + res.error);
       } else if (res.steps) {
         if (res.reply) say(res.reply);

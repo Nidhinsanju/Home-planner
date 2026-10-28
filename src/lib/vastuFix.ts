@@ -4,6 +4,7 @@ import { vastuFixSystem, vastuFixUser } from './aiPrompt';
 import { aiClient, aiErrorResult, CHAT_MAX_TOKENS, isOptionRejected, logAiCall, markNoJsonSchema, supportsJsonSchema, TryNextModel, withModels } from './aiClient';
 import { firstJson } from './modelReply';
 import { aiRateLimit } from './rateLimit';
+import { AiCharge, isAdmin, type ClientRef } from './aiQuota';
 import { applyCommands, describePlan, type BuildCommand } from '../plan/commands';
 import { importPlanJson } from '../plan/importPlan';
 import { emptyPlan, normalizeRoomType, roomType, type Plan } from '../plan/types';
@@ -18,7 +19,7 @@ import { analyzeVastu, vastuReport, vastuSummary } from '../plan/vastu';
 
 export type VastuFixResult =
   | { success: true; summary: string; changes: { command: BuildCommand; why: string }[]; before: number; after: number; model: string; warnings: string[] }
-  | { error: string; busy?: true }
+  | { error: string; busy?: true; limit?: true }
   | { aborted: true };
 
 // The only actions a fix may use: no deleting, no redrawing, no moving north.
@@ -55,11 +56,19 @@ function toCommands(changes: z.infer<typeof AnswerSchema>['changes']) {
   return { ok, rejected };
 }
 
-export async function runVastuFix(token: string, planId: string, rawPlan: unknown, signal?: AbortSignal): Promise<VastuFixResult> {
+// Uses one of the user's AI prompts (see aiQuota.ts), given back if the AI didn't answer.
+export async function runVastuFix(token: string, planId: string, rawPlan: unknown, signal?: AbortSignal, client: ClientRef = { fingerprint: '' }): Promise<VastuFixResult> {
+  const charge = new AiCharge(client);
+  const result = await vastuFixTurn(token, planId, rawPlan, signal, charge);
+  if (!('success' in result)) await charge.refund();
+  return result;
+}
+
+async function vastuFixTurn(token: string, planId: string, rawPlan: unknown, signal: AbortSignal | undefined, charge: AiCharge): Promise<VastuFixResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
   const user = await getUserByToken(token);
   if (!user) return { error: 'Your session has expired. Please log in again.' };
-  const limited = aiRateLimit(user._id);
+  const limited = aiRateLimit(user._id, isAdmin(user));
   if (!limited.ok) return { error: limited.error };
   if (JSON.stringify(rawPlan ?? null).length > 500_000) return { error: 'This plan is too large to send to the AI.' };
 
@@ -95,6 +104,9 @@ export async function runVastuFix(token: string, planId: string, rawPlan: unknow
     });
     return moved.length ? [`Note: this moves a kitchen or toilet into a different space (${moved.map(r => r.name).join(', ')}), which needs new plumbing${moved.some(r => r.type === 'kitchen') ? ' and gas lines' : ''}.`] : [];
   };
+
+  const paid = await charge.take(user);
+  if (!paid.ok) return { error: paid.error, limit: true };
 
   // What the model sees: the plan description, with the full report and its suggested swaps.
   const scene = { ...describePlan(base), vastu: vastuSummary(vastuReport(base)!) };

@@ -6,7 +6,8 @@ export type PlanId = (typeof PLAN_IDS)[number];
 export const isPlanId = (id: unknown): id is PlanId => PLAN_IDS.includes(id as PlanId);
 
 // Login tokens are JWTs signed with SUPER_KEY (HS256 only, with this app as the issuer), valid
-// for 7 days. No fallback secret: a hard-coded default would let anyone forge login tokens.
+// for 30 minutes, renewed while the user is active (renewSession, called by the app on use),
+// so an idle session ends after 30 minutes. No fallback secret: a hard-coded default would let anyone forge login tokens.
 const ISSUER = 'vastu-3d-visualizer';
 const ALGORITHM = 'HS256' as const;
 
@@ -18,7 +19,7 @@ function getJwtSecret() {
 }
 
 export function signToken(email: string) {
-  return jwt.sign({ email }, getJwtSecret(), { expiresIn: '7d', algorithm: ALGORITHM, issuer: ISSUER });
+  return jwt.sign({ email }, getJwtSecret(), { expiresIn: '30m', algorithm: ALGORITHM, issuer: ISSUER });
 }
 
 // Returns the lean user document for a valid token, or null.

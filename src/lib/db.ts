@@ -66,6 +66,8 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   passwordHash: { type: String, required: true },
   name: { type: String, required: true },
+  // "admin": no AI prompt limit and no per-device limits (also given by ADMIN_EMAILS in .env).
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
 }, { timestamps: true });
 
 const buildSchema = new mongoose.Schema({
@@ -118,6 +120,8 @@ const userDeviceSchema = new mongoose.Schema({
   browser: { type: String, default: 'unknown' },
   deviceType: { type: String, default: 'desktop' },
   ip: { type: String, default: 'unknown' },
+  deviceId: { type: String, default: 'unknown' },
+  fingerprint: { type: String, default: '' },
   connectionType: { type: String, default: 'unknown' },
   effectiveType: { type: String, default: 'unknown' },
   country: { type: String, default: 'unknown' },
@@ -126,7 +130,15 @@ const userDeviceSchema = new mongoose.Schema({
   lastSeenAt: { type: Date, required: true },
 }, { timestamps: true });
 
+// Counters that must outlive the server process (see aiQuota.ts): AI prompts used per account,
+// per device and per device print, and accounts created per device.
+const usageCounterSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  used: { type: Number, default: 0 },
+}, { timestamps: true });
+
 export const User = mongoose.models.User || mongoose.model('User', userSchema);
+export const UsageCounter = mongoose.models.UsageCounter || mongoose.model('UsageCounter', usageCounterSchema, 'usage_counters');
 export const UserDevice = mongoose.models.UserDevice || mongoose.model('UserDevice', userDeviceSchema, 'user_devices');
 export const ImageRead = mongoose.models.ImageRead || mongoose.model('ImageRead', imageReadSchema);
 export const CloudUsage = mongoose.models.CloudUsage || mongoose.model('CloudUsage', cloudUsageSchema);

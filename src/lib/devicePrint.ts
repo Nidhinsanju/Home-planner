@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 // The "device print" kept for each user in the user_devices collection: who they are (name,
@@ -10,6 +11,8 @@ import { z } from 'zod';
 // sends along (see deviceHints.ts). Nothing is sent to a third party.
 
 export type DevicePrint = {
+  deviceId: string; // the browser's random id (see deviceHints.ts)
+  fingerprint: string; // hash of network address + browser: the device, even without its id
   os: string;
   browser: string;
   deviceType: 'mobile' | 'tablet' | 'desktop';
@@ -22,12 +25,21 @@ export type DevicePrint = {
 };
 
 // What the browser may add (all optional, all short): see deviceHints.ts.
+// A device id is a random UUID made by the browser.
+export const isDeviceId = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+// The device print as one value: a hash (never the address itself) of the network address
+// and the browser, so the same device is recognised after its stored id is cleared.
+export const fingerprintOf = (ip: string, userAgent: string) =>
+  createHash('sha256').update(`${ip}|${userAgent.slice(0, 512)}`).digest('hex').slice(0, 32);
+
 const hint = z.string().trim().max(40).regex(/^[\w .,-]*$/).optional().catch(undefined);
 export const DeviceHints = z.object({
   platform: hint, // navigator.userAgentData.platform, e.g. "Windows"
   platformVersion: hint, // e.g. "15.0.0" (Windows 11 is 13 and up)
   connectionType: hint, // navigator.connection.type, e.g. "wifi"
   effectiveType: hint, // navigator.connection.effectiveType, e.g. "4g"
+  deviceId: z.string().refine(isDeviceId).optional().catch(undefined),
 }).catch({});
 export type DeviceHints = z.infer<typeof DeviceHints>;
 
@@ -99,6 +111,8 @@ export function devicePrint(h: Headers, ip: string, rawHints: unknown): DevicePr
   const hints = DeviceHints.parse(rawHints ?? {});
   const ua = (h.get('user-agent') ?? '').slice(0, 512);
   return {
+    deviceId: hints.deviceId || UNKNOWN,
+    fingerprint: fingerprintOf(ip || UNKNOWN, ua),
     os: osFrom(ua, hints),
     browser: browserFrom(ua),
     deviceType: deviceTypeFrom(ua),

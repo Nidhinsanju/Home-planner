@@ -5,6 +5,7 @@ import type { Background } from '../plan/types';
 import { imageSize } from './backgroundImage';
 import { readAiResponse } from '../lib/aiStreamClient';
 import { toast } from '../Toasts';
+import { aiHeaders } from '../lib/deviceHints';
 
 // Chat card for an uploaded floor plan. A newly uploaded image is sent to the vision model;
 // the card then shows what it found and asks whether to build those rooms or just keep the
@@ -44,7 +45,7 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
       const { width, height } = await imageSize(imageSrc);
       const response = await fetch('/api/plan-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+        headers: aiHeaders(localStorage.getItem('token') || ''),
         body: JSON.stringify({ planId, image: imageSrc, width, height, force }),
         signal: controller.signal,
       });

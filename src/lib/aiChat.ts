@@ -8,6 +8,7 @@ import { parseChatReply } from './modelReply';
 import { cleanUserText, gateCommands } from './promptSafety';
 import { aiRateLimit } from './rateLimit';
 import { gateDeletes, missingPlanRef } from './planRefs';
+import { AiCharge, isAdmin, type ClientRef } from './aiQuota';
 import { applySetPlan, type SetPlanPayload } from '../plan/setPlan';
 import { normalizePlanPayload } from '../plan/importPlan';
 import { emptyPlan } from '../plan/types';
@@ -25,8 +26,8 @@ import { emptyPlan } from '../plan/types';
 export type ChatMode = 'auto' | 'cloud' | 'step';
 
 export type ChatResult =
-  | { success: true; reply: string; buildCommands?: Record<string, any>[]; setPlan?: SetPlanPayload; steps?: CloudStep[]; cloud?: boolean }
-  | { error: string; busy?: true }
+  | { success: true; reply: string; buildCommands?: Record<string, any>[]; setPlan?: SetPlanPayload; steps?: CloudStep[]; cloud?: boolean; turn?: string }
+  | { error: string; busy?: true; limit?: true }
   | { aborted: true };
 
 const SET_PLAN_RETRIES = 2;
@@ -41,7 +42,18 @@ const REDESIGN = /\b(redesign|re-design|redo|redraw|start (over|again|from scrat
 // it; it is attached to the latest message only and not stored in the history.
 // Turns that change the plan are saved to the history by the browser (saveChatTurn) once it
 // knows what was actually applied, so the history never claims changes that didn't happen.
-export async function runChat(rawPrompt: unknown, token: string, planId: string, sceneData: unknown, signal?: AbortSignal, image?: string, mode: ChatMode = 'auto'): Promise<ChatResult> {
+// Each message the user sends ("auto") uses one of their AI prompts (see aiQuota.ts), given
+// back if the AI didn't answer. The planner ("cloud") and its steps ("step") are part of that
+// message: they show its `turn` and are free.
+export async function runChat(rawPrompt: unknown, token: string, planId: string, sceneData: unknown, signal?: AbortSignal, image?: string, mode: ChatMode = 'auto', client: ClientRef = { fingerprint: '' }, turn?: unknown): Promise<ChatResult> {
+  const charge = new AiCharge(client);
+  const result = await chatTurn(rawPrompt, token, planId, sceneData, signal, image, mode, charge, turn);
+  if (!('success' in result)) await charge.refund();
+  else if (charge.turn) return { ...result, turn: charge.turn };
+  return result;
+}
+
+async function chatTurn(rawPrompt: unknown, token: string, planId: string, sceneData: unknown, signal: AbortSignal | undefined, image: string | undefined, mode: ChatMode, charge: AiCharge, turn: unknown): Promise<ChatResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
   const prompt = cleanUserText(rawPrompt);
   if (!prompt) return { error: 'Empty message.' };
@@ -52,8 +64,10 @@ export async function runChat(rawPrompt: unknown, token: string, planId: string,
   // "Replace the balcony" with no balcony on the plan: said so, without asking the model.
   const missing = mode === 'step' ? null : missingPlanRef(prompt, sceneData);
   if (missing) return { success: true, reply: missing };
-  const limited = aiRateLimit(user._id);
+  const limited = aiRateLimit(user._id, isAdmin(user));
   if (!limited.ok) return { error: limited.error };
+  const paid = mode === 'auto' ? await charge.take(user) : charge.join(user, turn);
+  if (!paid.ok) return { error: paid.error, limit: true };
 
   if (JSON.stringify(sceneData ?? {}).length > MAX_SCENE_CHARS) return { error: 'This plan is too large to send to the AI.' };
   const hasImage = typeof image === 'string' && image.length <= MAX_IMAGE_CHARS && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image);

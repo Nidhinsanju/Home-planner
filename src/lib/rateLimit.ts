@@ -28,7 +28,8 @@ export const resetRateLimit = (key: string) => void windows.delete(key);
 const positive = (v: string | undefined, fallback: number) => (Number(v) > 0 ? Number(v) : fallback);
 
 // AI requests per user: AI_RATE_LIMIT per AI_RATE_WINDOW_MIN minutes (default 30 per 10).
-export function aiRateLimit(userId: unknown): { ok: true } | { ok: false; error: string } {
+export function aiRateLimit(userId: unknown, exempt = false): { ok: true } | { ok: false; error: string } {
+  if (exempt) return { ok: true }; // admins
   const limit = positive(process.env.AI_RATE_LIMIT, 30);
   const minutes = positive(process.env.AI_RATE_WINDOW_MIN, 10);
   const r = rateLimit(`ai:${String(userId)}`, limit, minutes * 60_000);
