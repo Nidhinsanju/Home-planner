@@ -5,7 +5,7 @@ import { fromWire, toPixelSpace, WIRE_JSON_SCHEMA, WireSchema, type Extraction }
 import { formatIssues } from '../plan/setPlan';
 import { EXTRACTION_VERSION, extractionPrompt } from './aiPrompt';
 import { ImageRead } from './db';
-import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, isOptionRejected, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
+import { aiClient, aiErrorResult, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, isOptionRejected, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
 import { firstJson } from './modelReply';
 import { aiRateLimit } from './rateLimit';
 
@@ -21,7 +21,7 @@ import { aiRateLimit } from './rateLimit';
 
 export type PlanImageResult =
   | { success: true; summary: string; rooms: ImageRoom[]; extraction: Extraction; imageWidth: number; imageHeight: number; model: string }
-  | { error: string }
+  | { error: string; busy?: true }
   | { aborted: true };
 
 const MAX_RETRIES = 2;
@@ -69,7 +69,7 @@ async function extract(image: string, width: number, height: number, info: Retur
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] read-plan error:', error?.status, error?.message);
-    return { error: aiErrorMessage(error) };
+    return aiErrorResult(error);
   }
 }
 

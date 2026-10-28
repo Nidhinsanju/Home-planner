@@ -34,3 +34,26 @@ export function aiRateLimit(userId: unknown): { ok: true } | { ok: false; error:
   const r = rateLimit(`ai:${String(userId)}`, limit, minutes * 60_000);
   return r.ok ? { ok: true } : { ok: false, error: `You've reached the limit of ${limit} AI requests in ${minutes} minutes. Try again in ${Math.ceil(r.retryAfterSec / 60)} minute(s).` };
 }
+
+// Ordinary requests (saving a plan, loading chat history, opening the app): generous enough
+// that nobody notices them, tight enough that a script can't hammer the database.
+export const REQUEST_LIMITS = {
+  save: { limit: 60, windowMs: 60_000 }, // plan saves per account per minute
+  chat: { limit: 120, windowMs: 60_000 }, // chat history reads/writes per account per minute
+  session: { limit: 60, windowMs: 60_000 }, // session checks per network address per minute
+  api: { limit: 60, windowMs: 60_000 }, // AI route calls per network address per minute
+} as const;
+
+export function requestRateLimit(kind: keyof typeof REQUEST_LIMITS, who: unknown): { ok: true } | { ok: false; error: string; retryAfterSec: number } {
+  const { limit, windowMs } = REQUEST_LIMITS[kind];
+  const r = rateLimit(`${kind}:${String(who)}`, limit, windowMs);
+  return r.ok ? { ok: true } : { ok: false, error: `Too many requests. Please wait ${r.retryAfterSec} second(s) and try again.`, retryAfterSec: r.retryAfterSec };
+}
+
+// The caller's network address from request headers (behind a proxy, its first forwarded
+// address), for per-address limits.
+export const clientAddressOf = (h: Headers) => (h.get('x-forwarded-for')?.split(',')[0] || h.get('x-real-ip') || 'local').trim().slice(0, 64);
+
+// A 429 response for a route, with Retry-After so clients know when to try again.
+export const tooManyRequests = (r: { error: string; retryAfterSec: number }) =>
+  Response.json({ error: r.error }, { status: 429, headers: { 'Retry-After': String(r.retryAfterSec) } });

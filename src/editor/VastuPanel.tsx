@@ -17,7 +17,6 @@ interface Props {
   report: VastuReport | null;
   onCommit: (next: Plan) => void;
   readOnly: boolean;
-  onAskAI?: (text: string) => void;
   // Asks the AI to fix the plan's Vastu; resolves with the lines to show (what changed and why).
   onFixWithAI?: () => Promise<string[]>;
 }
@@ -54,7 +53,7 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
-export function VastuPanel({ plan, rooms, report, onCommit, readOnly, onAskAI, onFixWithAI }: Props) {
+export function VastuPanel({ plan, rooms, report, onCommit, readOnly,  onFixWithAI }: Props) {
   const north = plan.northDeg ?? 0;
   const [fixing, setFixing] = React.useState(false);
   const [fixResult, setFixResult] = React.useState<string[]>([]);
@@ -129,11 +128,6 @@ export function VastuPanel({ plan, rooms, report, onCommit, readOnly, onAskAI, o
         <p className="notice">These rooms have no type, so they aren't checked: {report.untyped.join(', ')}. Set their type below.</p>
       )}
 
-      {onAskAI && (
-        <button className="primary-btn" style={{ marginBottom: 12 }} onClick={() => onAskAI('Explain my Vastu report: what is wrong, why it matters, and the most effective changes I can make, in order.')}>
-          <Sparkles size={14} /> Explain with AI
-        </button>
-      )}
       {onFixWithAI && !readOnly && (
         <button className="primary-btn" style={{ marginBottom: 12 }} disabled={fixing || report.checks.every(c => c.status === 'good')} onClick={fixWithAI}
           title="The AI proposes changes; they are only applied if the Vastu score really goes up. Undo brings the plan back.">

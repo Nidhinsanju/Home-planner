@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import OpenAI from 'openai';
 
 // The AI provider and the bits every request needs, configured ONLY from .env, so anyone who
@@ -131,35 +132,83 @@ function modelsFor(role: ModelRole) {
   return c.models;
 }
 
+// ---- live status -------------------------------------------------------------------------
+
+// What the user is told while a request is still running ("model 1 of 4 is busy, trying the
+// next one..."), shown as toasts. A route opts in with withAiStatus (see aiStream.ts); without
+// it, reporting does nothing. Messages never contain model names, keys or provider errors.
+export type AiStatus = { level: 'info' | 'warning' | 'error'; message: string };
+const statusSink = new AsyncLocalStorage<(status: AiStatus) => void>();
+export const withAiStatus = <T>(send: (status: AiStatus) => void, run: () => Promise<T>) => statusSink.run(send, run);
+export function reportAiStatus(status: AiStatus) {
+  try {
+    statusSink.getStore()?.(status);
+  } catch {
+    // the browser went away: nothing to tell
+  }
+}
+
+// Busy, rate limited, overloaded or unreachable: worth waiting a moment and asking again.
+export const isBusyError = (error: any) =>
+  error instanceof AllModelsBusy || (!(error instanceof TryNextModel) && !(error instanceof AiConfigError) && (error?.status == null || error.status === 429 || error.status === 408 || error.status >= 500));
+
+// Waits before asking busy models again (free tiers often answer 503 "high demand" for a few
+// seconds). A Retry-After from the provider is honoured, up to the longest wait here.
+export const BUSY_WAITS_MS = [2_000, 5_000]; // exported for the tests
+function retryAfterMs(error: any) {
+  const v = Number(error?.headers?.get?.('retry-after') ?? error?.headers?.['retry-after']);
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 0;
+}
+const pause = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(signal.reason);
+  const t = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, ms);
+  const stop = () => { clearTimeout(t); reject(signal!.reason); };
+  signal?.addEventListener('abort', stop, { once: true });
+});
+
 // Runs `request` with each model in turn until one succeeds. Models that failed recently are
-// tried last. Throws the last error if every model fails.
+// tried last. When every model was only busy, they are asked again after a short wait (twice
+// at most) before giving up with AllModelsBusy. Otherwise the last error is thrown.
 export async function withModels<T>(kind: string, request: (model: string) => Promise<T>, signal?: AbortSignal, role: ModelRole = 'chat'): Promise<{ result: T; model: string }> {
   const models = modelsFor(role);
   if (models.length === 0) throw new AiConfigError(role === 'planner' ? 'No planner model is set (AI_PLANNER_MODEL).' : 'No AI model is set: set AI_MODEL in .env.');
   const now = Date.now();
   const order = [...models.filter(m => (skipUntil.get(m) ?? 0) <= now), ...models.filter(m => (skipUntil.get(m) ?? 0) > now)];
   let lastError: unknown;
-  let busy = 0;
-  for (const model of order) {
-    try {
-      const result = await request(model);
-      skipUntil.delete(model);
-      return { result, model };
-    } catch (error: any) {
-      if (signal?.aborted) throw error;
-      lastError = error;
-      const wait = cooldown(error);
-      if (wait == null) throw error;
-      skipUntil.set(model, Date.now() + wait);
-      if (error?.status == null || error?.status === 429 || error?.status === 408 || error?.status >= 500) busy++;
-      console.warn(`[ai] ${kind}: ${model} failed (${error?.status ?? ''} ${String(error?.message ?? error).slice(0, 160)}); trying the next model`);
+  for (let round = 0; ; round++) {
+    let busy = 0;
+    for (const model of order) {
+      try {
+        const result = await request(model);
+        skipUntil.delete(model);
+        return { result, model };
+      } catch (error: any) {
+        if (signal?.aborted) throw error;
+        lastError = error;
+        const wait = cooldown(error);
+        if (wait == null) throw error;
+        skipUntil.set(model, Date.now() + wait);
+        if (isBusyError(error)) busy++;
+        console.warn(`[ai] ${kind}: ${model} failed (${error?.status ?? ''} ${String(error?.message ?? error).slice(0, 160)}); trying the next model`);
+        const n = order.indexOf(model) + 1, left = n < order.length;
+        const what = isBusyError(error) ? 'is busy' : "couldn't answer";
+        reportAiStatus({ level: 'warning', message: order.length > 1 ? `AI model ${n} of ${order.length} ${what}${left ? ', trying the next one…' : '.'}` : `The AI model ${what}.` });
+      }
     }
+    if (busy < order.length || lastError instanceof TryNextModel) throw lastError;
+    if (round >= BUSY_WAITS_MS.length) break;
+    const ms = Math.min(Math.max(BUSY_WAITS_MS[round], retryAfterMs(lastError)), BUSY_WAITS_MS[BUSY_WAITS_MS.length - 1]);
+    console.warn(`[ai] ${kind}: every model is busy; asking again in ${ms / 1000}s`);
+    reportAiStatus({ level: 'warning', message: `Every AI model is busy right now. Trying again in ${Math.round(ms / 1000)}s… (attempt ${round + 2} of ${BUSY_WAITS_MS.length + 1})` });
+    await pause(ms, signal);
   }
-  if (busy === order.length && !(lastError instanceof TryNextModel)) {
-    throw new AllModelsBusy(`Every AI model in your .env (${order.length}) is busy, rate limited or too slow right now. Try again in a minute${order.length === 1 ? ', or add AI_FALLBACK_MODELS' : ''}.`);
-  }
-  throw lastError;
+  console.warn(`[ai] ${kind}: every model in .env (${order.length}) is still busy${order.length === 1 ? '; AI_FALLBACK_MODELS would give it others to try' : ''}`);
+  reportAiStatus({ level: 'error', message: BUSY_MESSAGE });
+  throw new AllModelsBusy(BUSY_MESSAGE);
 }
+
+// What the user is told when the AI is busy. The plan is never changed by a failed request.
+export const BUSY_MESSAGE = 'The AI is very busy right now (high demand), so nothing was changed. Please try again in a minute.';
 
 // Optional request features. Each is sent only where it is known to work, and a model that
 // rejects one anyway is remembered and asked without it from then on.
@@ -218,6 +267,9 @@ export function logAiCall(kind: string, requested: string, response: { model?: s
   }
 }
 
+// The error result a route sends back: the message, and whether trying again later may work.
+export const aiErrorResult = (error: any) => ({ error: aiErrorMessage(error), ...(isBusyError(error) ? { busy: true as const } : {}) });
+
 // A message for the user from a provider error (after every model was tried). Never includes
 // the key or the provider's raw error text.
 export function aiErrorMessage(error: any): string {
@@ -226,7 +278,7 @@ export function aiErrorMessage(error: any): string {
   if (status === 401) return 'The AI key was refused. Check AI_API_KEY in .env.';
   if (status === 402) return 'The AI account is out of credit. Add credit, or set a different AI_MODEL or AI_FALLBACK_MODELS in .env.';
   if (status === 404) return 'The AI model was not found. Check that AI_MODEL in .env is spelled exactly as your provider lists it.';
-  if (status === 429) return 'The AI is busy (rate limited). Try again in a minute.';
+  if (status === 429 || status === 408 || status >= 500) return BUSY_MESSAGE;
   if (status === 400 || status === 422) return 'The AI model could not take this request (does it accept images? Set AI_VISION_MODEL in .env to one that does).';
-  return 'Could not reach the AI. Check your internet connection, AI_API_KEY and AI_BASE_URL.';
+  return 'Could not reach the AI service. Check your internet connection and try again.';
 }

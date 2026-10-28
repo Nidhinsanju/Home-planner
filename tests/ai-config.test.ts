@@ -42,18 +42,29 @@ test('the coordinate system for reading drawings can be chosen, with a sensible 
   assert.equal(aiConfig({ AI_API_KEY: 'sk-proj-x', AI_MODEL: 'm', AI_COORDINATES: 'norm1000' }).coordinates, 'norm1000');
 });
 
-test('when every model is busy, the error says so (not "check your key")', async () => {
-  const { withModels, aiErrorMessage } = await import('../src/lib/aiClient');
-  const saved = { ...process.env };
+test('when every model is busy, they are asked again, then the user is told the AI is busy', async () => {
+  const { withModels, aiErrorResult, BUSY_WAITS_MS } = await import('../src/lib/aiClient');
+  const saved = { ...process.env }, waits = [...BUSY_WAITS_MS];
   Object.assign(process.env, { AI_API_KEY: 'sk-proj-test', AI_MODEL: 'busy-a', AI_FALLBACK_MODELS: 'busy-b', AI_BASE_URL: '' });
+  BUSY_WAITS_MS.fill(1);
+  const busy = () => Object.assign(new Error('high demand'), { status: 503 });
   try {
     const tried: string[] = [];
     await assert.rejects(
-      withModels('test', async model => { tried.push(model); throw Object.assign(new Error('high demand'), { status: 503 }); }),
-      (e: Error) => /busy/.test(aiErrorMessage(e)),
+      withModels('test', async model => { tried.push(model); throw busy(); }),
+      (e: Error) => { const r = aiErrorResult(e); return r.busy === true && /busy/.test(r.error) && !/.env|AI_/.test(r.error); },
     );
-    assert.deepEqual(tried, ['busy-a', 'busy-b']);
+    assert.deepEqual(tried, ['busy-a', 'busy-b', 'busy-a', 'busy-b', 'busy-a', 'busy-b']);
+
+    // Busy at first, then it answers: the user never sees an error.
+    let calls = 0;
+    const { result } = await withModels('test', async () => { if (++calls < 3) throw busy(); return 'ok'; });
+    assert.equal(result, 'ok');
+
+    // A wrong key is not "busy": no waiting, no Try again.
+    await assert.rejects(withModels('test', async () => { throw Object.assign(new Error('bad key'), { status: 401 }); }), (e: Error) => !aiErrorResult(e).busy);
   } finally {
     process.env = saved;
+    BUSY_WAITS_MS.splice(0, BUSY_WAITS_MS.length, ...waits);
   }
 });

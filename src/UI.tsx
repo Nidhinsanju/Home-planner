@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import {
   Undo2, Redo2, Layers, Box, Bookmark, Trash2, ChevronDown, LogOut,
   Home, LayoutGrid, Boxes, Settings, LayoutTemplate, Upload, Sun,
-  Sparkles, Send, Armchair, Ruler, Car, Compass as CompassIcon
+  Sparkles, Send, Compass as CompassIcon
 } from 'lucide-react';
 import { getChatHistory, clearChatHistory, saveChatTurn } from './actions/chat';
 import type { Background } from './plan/types';
 import type { SetPlanPayload } from './plan/setPlan';
 import { PlanImageCard } from './editor/PlanImageCard';
 import { looksLikePlan, parseJsonText } from './plan/importPlan';
+import { readAiResponse } from './lib/aiStreamClient';
+import { toast } from './Toasts';
 
 export const NavRail = ({
   activeNav = 'plans',
@@ -272,9 +274,11 @@ export const Compass: React.FC<{ rotation?: number }> = ({ rotation = 0 }) => {
   );
 };
 
-export type AiChange = { changed: boolean; summary: string; notes: string[] };
+// `missingTarget`: the AI tried to change something that isn't on the plan, so nothing was done.
+export type AiChange = { changed: boolean; summary: string; notes: string[]; missingTarget?: boolean };
 
-export const ChatSidebar = ({
+// Memoised: it only re-renders when the plan, the image or its handlers change.
+export const ChatSidebar = React.memo(function ChatSidebar({
   onBuildCommands,
   onSetPlan,
   activePlanIndex,
@@ -282,8 +286,6 @@ export const ChatSidebar = ({
   background,
   onImageRead,
   onImageChoice,
-  onSwitchView,
-  setTool,
   onImportPlan,
   queuedPrompt,
   chatNote,
@@ -300,11 +302,9 @@ export const ChatSidebar = ({
   background?: Background;
   onImageRead: React.ComponentProps<typeof PlanImageCard>['onImageRead'];
   onImageChoice: React.ComponentProps<typeof PlanImageCard>['onImageChoice'];
-  onSwitchView?: (view: '2d' | '3d') => void;
-  setTool?: (tool: any) => void;
-}) => {
-  const [activeTab, setActiveTab] = useState<'chat' | 'suggestions'>('chat');
-  const [messages, setMessages] = React.useState<{ text: string; isAi: boolean; time?: string }[]>([
+}) {
+  // `retry`: the request to send again from a "Try again" button (when the AI was busy or unreachable).
+  const [messages, setMessages] = React.useState<{ text: string; isAi: boolean; time?: string; retry?: string; busy?: boolean }[]>([
     { text: "Hello! I am your AI assistant. How can I help you design your home today?", isAi: true, time: "10:20 AM" }
   ]);
   const [input, setInput] = React.useState('');
@@ -401,7 +401,14 @@ export const ChatSidebar = ({
   const applyCommandsNow = (cmds: any[]) => applyNow(() => onBuildCommandsRef.current?.(cmds));
   const stepsDoneRef = React.useRef(0);
 
-  const say = (text: string) => setMessages(prev => [...prev, { text, isAi: true, time: getNowTime() }]);
+  const say = (text: string, extra?: { retry?: string; busy?: boolean }) => setMessages(prev => [...prev, { text, isAi: true, time: getNowTime(), ...extra }]);
+
+  // Sends a failed request again; its button goes away so it is pressed once.
+  const retry = (idx: number, prompt: string) => {
+    if (isLoading) return;
+    setMessages(prev => prev.map((m, i) => (i === idx ? { ...m, retry: undefined } : m)));
+    run(prompt);
+  };
 
   const handleSend = () => {
     if (!input.trim() || isLoading) return;
@@ -413,7 +420,7 @@ export const ChatSidebar = ({
     if (raw && looksLikePlan(raw)) {
       setIsLoading(true);
       onImportPlan!(userMsg)
-        .then(({ message, notes }) => [message, ...notes].filter(Boolean).forEach(say))
+        .then(({ message, notes }) => [message, ...notes].filter(Boolean).forEach(t => say(t)))
         .finally(() => setIsLoading(false));
       return;
     }
@@ -457,7 +464,8 @@ export const ChatSidebar = ({
         body: JSON.stringify({ prompt: text, planId, sceneData: sceneDataRef.current, mode, image: imageRef.current }),
         signal: controller.signal,
       });
-      return response.json();
+      // Live updates ("the AI is busy, trying the next model…") as toasts while it works.
+      return readAiResponse(response, s => toast(s.message, s.level));
     };
 
     try {
@@ -477,7 +485,7 @@ export const ChatSidebar = ({
       }
       if (res.buildCommands?.length) {
         const change = await applyCommandsNow(res.buildCommands);
-        if (change.changed || !res.cloud) {
+        if (change.changed || !res.cloud || change.missingTarget) {
           await report(change);
           return;
         }
@@ -486,7 +494,8 @@ export const ChatSidebar = ({
         if (stale() || res.aborted) return;
       }
       if (res.error) {
-        say("Error: " + res.error);
+        if (res.busy) say(res.error, { retry: prompt, busy: true });
+        else say("Error: " + res.error);
       } else if (res.steps) {
         if (res.reply) say(res.reply);
         await runSteps(res.steps, post, stale);
@@ -495,7 +504,7 @@ export const ChatSidebar = ({
       }
     } catch {
       if (controller.signal.aborted) return;
-      say("Sorry, I encountered an error communicating with the server.");
+      say("I couldn't reach the server, so nothing was changed. Check your connection and try again.", { retry: prompt });
     } finally {
       if (!controller.signal.aborted) setIsLoading(false);
       if (abortRef.current === controller) abortRef.current = null;
@@ -560,46 +569,14 @@ export const ChatSidebar = ({
       </div>
 
       <div className="chat-tabs-row">
-        <button
-          className={`chat-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
-          onClick={() => setActiveTab('chat')}
+        <span
+          className={'chat-tab-btn active'}
         >
           Chat
-        </button>
-        <button
-          className={`chat-tab-btn ${activeTab === 'suggestions' ? 'active' : ''}`}
-          onClick={() => setActiveTab('suggestions')}
-        >
-          Suggestions
-        </button>
+        </span>
       </div>
 
       <div className="chat-messages">
-        {activeTab === 'suggestions' ? (
-          <div className="suggestions-list" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {[
-              "Remove the Balcony and make it as parking",
-              "Add furniture to all bedrooms and living room",
-              "Change dimensions as per the architectural drawing",
-              "Add a master bedroom with attached bathroom",
-              "Make this plan compliant with Vastu guidelines"
-            ].map((sugg, i) => (
-              <button
-                key={i}
-                className="qa-btn"
-                style={{ background: '#f8fafc', color: '#1e293b', border: '1px solid #e2e8f0', justifyContent: 'flex-start', textAlign: 'left' }}
-                onClick={() => {
-                  setActiveTab('chat');
-                  setMessages(prev => [...prev, { text: sugg, isAi: false, time: getNowTime() }]);
-                  run(sugg);
-                }}
-              >
-                <Sparkles size={14} color="#2563eb" />
-                <span>{sugg}</span>
-              </button>
-            ))}
-          </div>
-        ) : (
           <>
             {messages.map((msg, idx) => (
               <div key={idx} className={`chat-message ${msg.isAi ? 'ai' : 'user'}`}>
@@ -607,10 +584,13 @@ export const ChatSidebar = ({
                   {msg.isAi && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>
                       <Sparkles size={15} color="#2563eb" />
-                      <span>{msg.text.startsWith('Hello') ? 'Assistant' : 'I have updated the scene.'}</span>
+                      <span>{msg.busy ? 'AI is busy' : msg.retry ? 'Connection problem' : 'Assistant'}</span>
                     </div>
                   )}
                   <div>{msg.text}</div>
+                  {msg.retry && (
+                    <button className="chat-retry-btn" disabled={isLoading} onClick={() => retry(idx, msg.retry!)}>Try again</button>
+                  )}
                 </div>
                 {msg.time && <span className="chat-timestamp">{msg.time}</span>}
               </div>
@@ -634,60 +614,6 @@ export const ChatSidebar = ({
             )}
             <div ref={endRef} />
           </>
-        )}
-      </div>
-
-      <div className="quick-actions-section">
-        <h4 className="quick-actions-title">+ Quick Actions</h4>
-        <div className="quick-actions-grid">
-          <button
-            className="qa-btn blue"
-            onClick={() => {
-              const cmd = "Remove the Balcony and make it as parking";
-              setMessages(prev => [...prev, { text: cmd, isAi: false, time: getNowTime() }]);
-              run(cmd);
-            }}
-          >
-            <Car size={15} />
-            <span>Remove the Balcony and make it as parking</span>
-          </button>
-
-          <div className="qa-row">
-            <button
-              className="qa-btn purple"
-              onClick={() => {
-                setTool?.('item:sofa');
-                const cmd = "Add furniture to the rooms";
-                setMessages(prev => [...prev, { text: cmd, isAi: false, time: getNowTime() }]);
-                run(cmd);
-              }}
-            >
-              <Armchair size={15} />
-              <span>Add furniture</span>
-            </button>
-            <button
-              className="qa-btn green"
-              onClick={() => {
-                const cmd = "Change dimensions to match the reference plan";
-                setMessages(prev => [...prev, { text: cmd, isAi: false, time: getNowTime() }]);
-                run(cmd);
-              }}
-            >
-              <Ruler size={15} />
-              <span>Change dimensions</span>
-            </button>
-          </div>
-
-          <button
-            className="qa-btn orange"
-            onClick={() => {
-              onSwitchView?.('3d');
-            }}
-          >
-            <Box size={15} />
-            <span>Make 3D view</span>
-          </button>
-        </div>
       </div>
 
       <div className="chat-input-pill">
@@ -708,4 +634,4 @@ export const ChatSidebar = ({
       </div>
     </div>
   );
-};
+});

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { CloudUsage, connectToDatabase } from './db';
 import { cloudPlannerSystem, cloudPlannerUser } from './aiPrompt';
-import { aiClient, AiConfigError, aiConfig, aiErrorMessage, isOptionRejected, logAiCall, markNoJsonSchema, supportsJsonSchema, withModels } from './aiClient';
+import { aiClient, AiConfigError, aiConfig, aiErrorResult, isOptionRejected, logAiCall, markNoJsonSchema, supportsJsonSchema, withModels } from './aiClient';
 import { firstJson, CHAT_ACTIONS } from './modelReply';
 
 // The optional planner: a stronger model (AI_PLANNER_MODEL in .env, same provider and key as
@@ -34,7 +34,7 @@ async function recordUsage(userId: unknown, usage: { prompt_tokens?: number; com
   );
 }
 
-export type CloudResult<T> = { data: T } | { error: string } | { aborted: true };
+export type CloudResult<T> = { data: T } | { error: string; busy?: true } | { aborted: true };
 export type CloudStep = { instruction: string; command: Record<string, any> | null };
 export type CloudPlan = { reply: string; steps: CloudStep[] };
 
@@ -97,6 +97,6 @@ export async function planRequest(userId: unknown, prompt: string, sceneData: un
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] planner error:', error?.status, error?.message);
-    return { error: aiErrorMessage(error) };
+    return aiErrorResult(error);
   }
 }

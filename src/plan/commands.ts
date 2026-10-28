@@ -433,10 +433,37 @@ export function applyCommand(plan: Plan, cmd: BuildCommand): { plan: Plan; error
   }
 }
 
-export function applyCommands(plan: Plan, cmds: BuildCommand[]) {
+// Why a command that changes something already on the plan can't find it (null when it can,
+// or when the command doesn't change an existing thing).
+function missingTarget(plan: Plan, cmd: BuildCommand): string | null {
+  const room = (ref: unknown) => { const r = roomRef(plan, ref); return typeof r === 'string' ? r : null; };
+  switch (String(cmd?.action ?? '')) {
+    case 'delete':
+    case 'remove':
+    case 'move':
+      return findTarget(plan, cmd.id, cmd.name) ? null : `I couldn't find "${cmd.name ?? cmd.id}" on the plan.`;
+    case 'update':
+    case 'rename':
+      return findTarget(plan, cmd.id) ? null : `I couldn't find "${cmd.id}" on the plan.`;
+    case 'resize':
+      return room(cmd.id ?? cmd.room ?? cmd.name);
+    case 'swapRooms':
+    case 'openWall':
+    case 'closeWall':
+      return Array.isArray(cmd.between) ? cmd.between.map(room).find(Boolean) ?? null : null;
+    default:
+      return null;
+  }
+}
+
+// With `allOrNothing`, a command that changes something not on the plan (e.g. "replace the
+// balcony" when there is none) cancels the whole set, so half a request is never carried out.
+export function applyCommands(plan: Plan, cmds: BuildCommand[], { allOrNothing = false } = {}) {
   const errors: string[] = [];
   let next = plan;
   for (const cmd of cmds) {
+    const missing = allOrNothing ? missingTarget(next, cmd) : null;
+    if (missing) return { plan, errors: [`${missing} So I didn't change anything.`], missingTarget: true };
     const res = applyCommand(next, cmd);
     next = res.plan;
     if (res.error) errors.push(res.error);

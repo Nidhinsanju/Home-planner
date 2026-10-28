@@ -366,8 +366,8 @@ zipFolder(OUT, path.resolve('training-data.zip'));
 
 const byKind: Record<string, number> = {};
 for (const s of samples) byKind[s.kind] = (byKind[s.kind] ?? 0) + 1;
-console.log(`Wrote ${train.length} train + ${val.length} val samples to ${OUT}`);
-console.log('By kind:', byKind);
-console.log('Rejected by the app (not written):', rejected);
-console.log(`Longest sample: ${longest} chars (~${Math.round(longest / 3.5)} tokens)`);
-console.log(`Zipped for upload: ${path.resolve('training-data.zip')}`);
+// console.log(`Wrote ${train.length} train + ${val.length} val samples to ${OUT}`);
+// console.log('By kind:', byKind);
+// console.log('Rejected by the app (not written):', rejected);
+// console.log(`Longest sample: ${longest} chars (~${Math.round(longest / 3.5)} tokens)`);
+// console.log(`Zipped for upload: ${path.resolve('training-data.zip')}`);

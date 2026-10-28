@@ -108,7 +108,26 @@ const cloudUsageSchema = new mongoose.Schema({
 });
 cloudUsageSchema.index({ userId: 1, day: 1 }, { unique: true });
 
+// Each user's device print (see src/lib/devicePrint.ts): one record per user, updated at each
+// sign-up, login and app open. Kept apart from the accounts, and never holds a password.
+const userDeviceSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  name: { type: String, default: '' },
+  email: { type: String, default: '' },
+  os: { type: String, default: 'unknown' },
+  browser: { type: String, default: 'unknown' },
+  deviceType: { type: String, default: 'desktop' },
+  ip: { type: String, default: 'unknown' },
+  connectionType: { type: String, default: 'unknown' },
+  effectiveType: { type: String, default: 'unknown' },
+  country: { type: String, default: 'unknown' },
+  region: { type: String, default: 'unknown' },
+  city: { type: String, default: 'unknown' },
+  lastSeenAt: { type: Date, required: true },
+}, { timestamps: true });
+
 export const User = mongoose.models.User || mongoose.model('User', userSchema);
+export const UserDevice = mongoose.models.UserDevice || mongoose.model('UserDevice', userDeviceSchema, 'user_devices');
 export const ImageRead = mongoose.models.ImageRead || mongoose.model('ImageRead', imageReadSchema);
 export const CloudUsage = mongoose.models.CloudUsage || mongoose.model('CloudUsage', cloudUsageSchema);
 export const Build = mongoose.models.Build || mongoose.model('Build', buildSchema);

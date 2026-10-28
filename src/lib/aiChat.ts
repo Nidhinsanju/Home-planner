@@ -3,10 +3,11 @@ import { getUserByToken, isPlanId } from './session';
 import { parseCommands } from './parseCommands';
 import { systemMessage, userMessageText } from './aiPrompt';
 import { cloudCallsLeft, cloudEnabled, planRequest, type CloudStep } from './cloudAI';
-import { aiClient, aiErrorMessage, CHAT_MAX_TOKENS, imageInfo, logAiCall, withModels } from './aiClient';
+import { aiClient, aiErrorResult, CHAT_MAX_TOKENS, imageInfo, logAiCall, withModels } from './aiClient';
 import { parseChatReply } from './modelReply';
 import { cleanUserText, gateCommands } from './promptSafety';
 import { aiRateLimit } from './rateLimit';
+import { gateDeletes, missingPlanRef } from './planRefs';
 import { applySetPlan, type SetPlanPayload } from '../plan/setPlan';
 import { normalizePlanPayload } from '../plan/importPlan';
 import { emptyPlan } from '../plan/types';
@@ -25,7 +26,7 @@ export type ChatMode = 'auto' | 'cloud' | 'step';
 
 export type ChatResult =
   | { success: true; reply: string; buildCommands?: Record<string, any>[]; setPlan?: SetPlanPayload; steps?: CloudStep[]; cloud?: boolean }
-  | { error: string }
+  | { error: string; busy?: true }
   | { aborted: true };
 
 const SET_PLAN_RETRIES = 2;
@@ -48,6 +49,9 @@ export async function runChat(rawPrompt: unknown, token: string, planId: string,
   // Only signed-in users may use the AI, and only so often.
   const user = await getUserByToken(token);
   if (!user) return { error: 'Your session has expired. Please log in again.' };
+  // "Replace the balcony" with no balcony on the plan: said so, without asking the model.
+  const missing = mode === 'step' ? null : missingPlanRef(prompt, sceneData);
+  if (missing) return { success: true, reply: missing };
   const limited = aiRateLimit(user._id);
   if (!limited.ok) return { error: limited.error };
 
@@ -151,8 +155,13 @@ export async function runChat(rawPrompt: unknown, token: string, planId: string,
       if (signal?.aborted) return { aborted: true };
       if ('error' in answer) return answer;
     }
-    // Destructive commands only run when the user's own words asked for them.
-    const { allowed, blocked } = gateCommands(answer.commands.filter(c => c.action !== 'askExpert'), prompt);
+    // Destructive commands only run when the user's own words asked for them, and a delete
+    // only removes what the user named (not the car in the parking, nor the room next to it).
+    const gated = gateCommands(answer.commands.filter(c => c.action !== 'askExpert'), prompt);
+    const deletes = gateDeletes(gated.allowed, prompt, sceneData);
+    const allowed = deletes.allowed, blocked = [...gated.blocked, ...deletes.blocked];
+    // What the model asked for (actions and targets only), to see why a change happened.
+    if (answer.commands.length) console.info(`[ai] chat commands: ${answer.commands.map(c => [c.action, c.type, c.id ?? c.name].filter(Boolean).join(' ')).join('; ').slice(0, 500)}${blocked.length ? ` (${blocked.length} blocked)` : ''}`);
     const text = [answer.text, ...answer.notes, ...blocked].filter(Boolean).join('\n');
 
     if (answer.setPlan) return { success: true, setPlan: answer.setPlan, reply: text };
@@ -165,6 +174,6 @@ export async function runChat(rawPrompt: unknown, token: string, planId: string,
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] chat error:', error?.status, error?.message);
-    return { error: aiErrorMessage(error) };
+    return aiErrorResult(error);
   }
 }

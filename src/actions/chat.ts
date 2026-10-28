@@ -2,12 +2,13 @@
 
 import { connectToDatabase, ChatHistory } from '../lib/db';
 import { getUserByToken, isPlanId } from '../lib/session';
+import { requestRateLimit } from '../lib/rateLimit';
 
 export async function getChatHistory(token: string, planId: string) {
   if (!token || !isPlanId(planId)) return { messages: [] };
   try {
     const user = await getUserByToken(token);
-    if (!user) return { messages: [] };
+    if (!user || !requestRateLimit('chat', user._id).ok) return { messages: [] };
 
     await connectToDatabase();
     const history = await ChatHistory.findOne({ userId: user._id, planId }).lean() as any;
@@ -27,6 +28,8 @@ export async function clearChatHistory(token: string, planId: string) {
   try {
     const user = await getUserByToken(token);
     if (!user) return { success: false, error: 'User not found' };
+    const limited = requestRateLimit('chat', user._id);
+    if (!limited.ok) return { success: false, error: limited.error };
 
     await connectToDatabase();
     await ChatHistory.updateOne({ userId: user._id, planId }, { $set: { messages: [] } });
@@ -42,7 +45,7 @@ export async function saveChatTurn(token: string, planId: string, prompt: string
   if (!token || !isPlanId(planId)) return { success: false };
   try {
     const user = await getUserByToken(token);
-    if (!user) return { success: false };
+    if (!user || !requestRateLimit('chat', user._id).ok) return { success: false };
     await connectToDatabase();
     await ChatHistory.updateOne(
       { userId: user._id, planId },

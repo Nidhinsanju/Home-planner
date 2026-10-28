@@ -3,9 +3,10 @@
 import bcrypt from 'bcryptjs';
 import { headers } from 'next/headers';
 import { z } from 'zod';
-import { connectToDatabase, User, Build } from '../lib/db';
+import { connectToDatabase, User, Build, UserDevice } from '../lib/db';
 import { getUserByToken, signToken } from '../lib/session';
-import { rateLimit, resetRateLimit } from '../lib/rateLimit';
+import { clientAddressOf, rateLimit, requestRateLimit, resetRateLimit } from '../lib/rateLimit';
+import { devicePrint } from '../lib/devicePrint';
 
 // Sign-up and login. Inputs are validated, emails are stored lower-case, passwords are hashed
 // with bcrypt (cost 12), and attempts are rate-limited per email and per network address, so
@@ -30,10 +31,26 @@ const field = (formData: FormData, name: string) => {
   return typeof v === 'string' ? v : '';
 };
 // The caller's network address (behind a proxy, its first forwarded address), for rate limits.
-async function clientAddress() {
-  const h = await headers();
-  return (h.get('x-forwarded-for')?.split(',')[0] || h.get('x-real-ip') || 'local').trim().slice(0, 64);
+const clientAddress = async () => clientAddressOf(await headers());
+
+// Saves the user's device print (user_devices: name, email, OS, network, location, time; never
+// the password). A failure is logged and never blocks signing in.
+async function recordDevice(user: { _id: unknown; name?: string; email?: string }, hints: unknown) {
+  try {
+    const h = await headers();
+    const print = devicePrint(h, clientAddressOf(h), hints);
+    await UserDevice.updateOne(
+      { userId: user._id },
+      { $set: { name: user.name ?? '', email: user.email ?? '', ...print, lastSeenAt: new Date() } },
+      { upsert: true },
+    );
+  } catch (err) {
+    console.error('recordDevice error:', err);
+  }
 }
+const hintsField = (formData: FormData) => {
+  try { return JSON.parse(field(formData, 'deviceHints').slice(0, 1000) || '{}'); } catch { return {}; }
+};
 
 export async function login(formData: FormData) {
   const parsed = LoginInput.safeParse({ email: field(formData, 'email'), password: field(formData, 'password') });
@@ -51,6 +68,7 @@ export async function login(formData: FormData) {
   if (!user || !isMatch) return { error: 'Invalid email or password' };
 
   resetRateLimit(`login:${email}`);
+  await recordDevice(user, hintsField(formData));
   return { success: true, token: signToken(user.email) };
 }
 
@@ -73,13 +91,18 @@ export async function signup(formData: FormData) {
     { userId: newUser._id, planId: 'p1', data: emptyData },
     { userId: newUser._id, planId: 'p2', data: emptyData },
   ]);
+  await recordDevice(newUser, hintsField(formData));
 
   return { success: true, token: signToken(email) };
 }
 
-export async function getUserFromToken(token: string) {
+// The signed-in user with their plans, or null if the token is invalid. `{ rateLimited: true }`
+// when this address checks too often: the token is fine, so the browser must keep it.
+export async function getUserFromToken(token: string, deviceHints?: unknown) {
+  if (!requestRateLimit('session', await clientAddress()).ok) return { rateLimited: true as const };
   const user = await getUserByToken(token);
   if (!user) return null;
+  await recordDevice(user, deviceHints);
   try {
     const builds = await Build.find({ userId: user._id }).lean() as any[];
     const emptyData = { rooms: [], walls: [], surfaces: [], doors: [], windows: [], assets: [] };

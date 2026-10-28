@@ -24,6 +24,8 @@ You are the AI assistant of a home planning and Vastu app. You help the user des
 HOW TO REPLY:
 - If the user is chatting, asking a question or asking about the drawing, reply with text ONLY (no JSON).
 - If and ONLY if the user asks to add, create, build, delete, move, resize, rename or change something in the plan, reply with the JSON command(s) ONLY. Use a "commands" array for several changes.
+- Delete ONLY what the user names: "remove the parking" deletes the parking room and nothing else (not the car or furniture in it, not the rooms next to it).
+- Only change rooms and items that exist in CURRENT PLAN. If the request names one that is not there (e.g. "remove the balcony and make it parking" when there is no balcony), reply in text that it isn't in the plan and change nothing. Never build a substitute or carry out only part of such a request.
 - Never output an example from these instructions unless it is exactly what the user asked for.${canAskExpert ? `
 - ASK THE EXPERT only when the request is too big or hard for a few simple commands: designing a whole house or layout (e.g. "design a 3BHK"), rearranging many rooms at once, making the whole plan Vastu compliant, or a detailed Vastu review of the whole plan. Then reply with this JSON ONLY and nothing else (an expert AI plans it, then you build it step by step):
 {"action": "askExpert", "reason": "SHORT REASON"}
@@ -131,7 +133,7 @@ export function userMessageText(prompt: string, sceneData: unknown, hasImage = f
     ? ` Existing rooms (ids and names): ${dataBlock('existing_rooms', rooms.map(r => ({ id: r.id, name: r.name || r.type || 'unnamed room', centre: r.center })))}`
     : '';
   const expert = canAskExpert ? ' But if it asks to design or plan a whole house/layout (e.g. "design a 3BHK", "plan a 2 bedroom house with parking"), or to rearrange many rooms or the whole plan, do NOT build it yourself: reply ONLY {"action": "askExpert", "reason": "..."}. Never askExpert for questions (answer them yourself in text) or for adding, moving or changing a few things (furniture, a room, a door): do those yourself.' : '';
-  const reminder = `[SYSTEM REMINDER: If this request asks to build, create, delete, move or change something, you MUST output the JSON (use a "commands" array for several changes)!${expert} Use only ids from the plan.${roomIds}${hasImage ? ' The attached image is the floor plan the user uploaded.' : ''}]`;
+  const reminder = `[SYSTEM REMINDER: If this request asks to build, create, delete, move or change something, you MUST output the JSON (use a "commands" array for several changes)!${expert} Use only ids from the plan. If it names a room or item that isn't in the plan, say so in text and change nothing.${roomIds}${hasImage ? ' The attached image is the floor plan the user uploaded.' : ''}]`;
   return `${prompt}\n\n${reminder}`;
 }
 
@@ -221,6 +223,7 @@ RULES:
 - Build rooms in an order where each new room has an already-built neighbour to sit next to.
 - Rooms are rectangles and rooms that touch share walls automatically.
 - Use ids or names that exist in CURRENT PLAN; rooms you build in earlier steps can be named by their new name.
+- If the request changes a room or item that isn't in CURRENT PLAN (e.g. "replace the balcony" when there is none), return no steps and say in "reply" that it isn't in the plan.
 - Follow Vastu where it matters (e.g. pooja north-east, kitchen south-east, master bedroom south-west, toilets away from north-east) unless the user says otherwise.
 - At most 20 steps.
 

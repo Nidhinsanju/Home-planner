@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getUserByToken, isPlanId } from './session';
 import { vastuFixSystem, vastuFixUser } from './aiPrompt';
-import { aiClient, aiErrorMessage, CHAT_MAX_TOKENS, isOptionRejected, logAiCall, markNoJsonSchema, supportsJsonSchema, TryNextModel, withModels } from './aiClient';
+import { aiClient, aiErrorResult, CHAT_MAX_TOKENS, isOptionRejected, logAiCall, markNoJsonSchema, supportsJsonSchema, TryNextModel, withModels } from './aiClient';
 import { firstJson } from './modelReply';
 import { aiRateLimit } from './rateLimit';
 import { applyCommands, describePlan, type BuildCommand } from '../plan/commands';
@@ -18,7 +18,7 @@ import { analyzeVastu, vastuReport, vastuSummary } from '../plan/vastu';
 
 export type VastuFixResult =
   | { success: true; summary: string; changes: { command: BuildCommand; why: string }[]; before: number; after: number; model: string; warnings: string[] }
-  | { error: string }
+  | { error: string; busy?: true }
   | { aborted: true };
 
 // The only actions a fix may use: no deleting, no redrawing, no moving north.
@@ -155,6 +155,6 @@ export async function runVastuFix(token: string, planId: string, rawPlan: unknow
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] vastu-fix error:', error?.status, error?.message);
-    return { error: aiErrorMessage(error) };
+    return aiErrorResult(error);
   }
 }

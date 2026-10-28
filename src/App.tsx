@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -23,12 +23,19 @@ import { analyzeVastu, vastuReport } from './plan/vastu';
 import { describeChange } from './plan/summary';
 import type { AiChange } from './UI';
 import { DisplayUnit } from './units';
+import { useThrottledCallback } from './hooks/timing';
+import { readAiResponse } from './lib/aiStreamClient';
+import { toast, Toaster } from './Toasts';
 import './index.css';
 
 // Frames the plan on first render, then handles D-pad panning and compass rotation.
 const CameraController = ({ plan, panState, onRotationChange, isInteracting }: any) => {
   const { camera, controls } = useThree();
   const framed = useRef(false);
+  // The angle is read every frame, but the compass only needs it about 10 times a second, and
+  // only when it changed: each update re-renders the app around the canvas.
+  const lastAngle = useRef<number | null>(null);
+  const reportRotation = useThrottledCallback(onRotationChange, 100);
   useFrame(() => {
     if (!controls) return;
     const c = controls as any;
@@ -45,7 +52,11 @@ const CameraController = ({ plan, panState, onRotationChange, isInteracting }: a
       camera.position.set(cx + size * 0.75, size * 0.85, cz + size * 0.95);
       c.update();
     }
-    onRotationChange(c.getAzimuthalAngle());
+    const angle = c.getAzimuthalAngle();
+    if (lastAngle.current == null || Math.abs(angle - lastAngle.current) > 0.002) {
+      lastAngle.current = angle;
+      reportRotation(angle);
+    }
     let mx = 0, mz = 0;
     if (panState.up) mz -= 1;
     if (panState.down) mz += 1;
@@ -62,6 +73,7 @@ const CameraController = ({ plan, panState, onRotationChange, isInteracting }: a
 
 type PlanState = { history: Plan[]; index: number };
 const initState = (plan: Plan): PlanState => ({ history: [plan], index: 0 });
+const noop = () => {};
 
 function App({ initialUser }: any) {
   const [activePlanIndex, setActivePlanIndex] = useState<0 | 1 | 2>(0);
@@ -72,7 +84,7 @@ function App({ initialUser }: any) {
   const saved = useRef<{ p1: Plan; p2: Plan }>({ p1: p1.history[0], p2: p2.history[0] });
 
   const current = activePlanIndex === 0 ? p1 : activePlanIndex === 1 ? p2 : example;
-  const setCurrent = activePlanIndex === 0 ? setP1 : activePlanIndex === 1 ? setP2 : () => {};
+  const setCurrent = activePlanIndex === 0 ? setP1 : activePlanIndex === 1 ? setP2 : noop;
   const readOnly = activePlanIndex === 2;
   const planKey = activePlanIndex === 0 ? 'p1' : 'p2';
   const plan = current.history[current.index];
@@ -93,7 +105,7 @@ function App({ initialUser }: any) {
   const dirty = !readOnly && plan !== saved.current[planKey];
 
   // Every edit goes through here: one undo step, labels re-attached to their rooms.
-  const commit = (next: Plan) => {
+  const commit = useCallback((next: Plan) => {
     if (readOnly || next === plan) return;
     const reconciled = ops.reconcileLabels(plan, next);
     const history = [...current.history.slice(0, current.index + 1), reconciled];
@@ -108,12 +120,12 @@ function App({ initialUser }: any) {
       }
     }
     return reconciled;
-  };
+  }, [readOnly, plan, current, setCurrent, selection, rooms]);
 
-  const undo = () => current.index > 0 && setCurrent({ ...current, index: current.index - 1 });
-  const redo = () => current.index < current.history.length - 1 && setCurrent({ ...current, index: current.index + 1 });
+  const undo = useCallback(() => current.index > 0 && setCurrent({ ...current, index: current.index - 1 }), [current, setCurrent]);
+  const redo = useCallback(() => current.index < current.history.length - 1 && setCurrent({ ...current, index: current.index + 1 }), [current, setCurrent]);
 
-  const persist = async (p: Plan) => {
+  const persist = useCallback(async (p: Plan) => {
     const token = localStorage.getItem('token') || '';
     const res = await saveBuild(planKey, { plan: p }, token);
     if (!res.error) {
@@ -121,17 +133,17 @@ function App({ initialUser }: any) {
       forceRender(n => n + 1);
     }
     return res;
-  };
+  }, [planKey]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (readOnly) return;
     const res = await persist(plan);
     if (res.error) alert(res.error);
-  };
+  }, [readOnly, persist, plan]);
 
   // Empties the current plan (walls, rooms, furniture and background image) and saves it.
   // Kept as one undo step, so Undo + Save brings it back.
-  const handleRemovePlan = async () => {
+  const handleRemovePlan = useCallback(async () => {
     if (readOnly) return;
     if (!window.confirm(`Remove Plan ${activePlanIndex + 1}? Everything on it, including the background image, will be deleted and saved. You can still Undo until you leave the page.`)) return;
     const next = commit(emptyPlan());
@@ -140,19 +152,26 @@ function App({ initialUser }: any) {
     if (!next) return;
     const res = await persist(next);
     if (res.error) alert(res.error);
-  };
+  }, [readOnly, activePlanIndex, commit, persist]);
 
-  const handleSwitchPlan = (i: 0 | 1 | 2) => {
+  const handleSwitchPlan = useCallback((i: 0 | 1 | 2) => {
     setActivePlanIndex(i);
     setSelection(null);
     setTool('select');
-  };
+  }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     if (dirty && !window.confirm('You have unsaved changes. Log out anyway?')) return;
     localStorage.removeItem('token');
     window.location.href = '/';
-  };
+  }, [dirty]);
+
+  // Picking a drawing tool switches to the 2D view, where it is used.
+  const chooseTool = useCallback((t: Tool) => {
+    setTool(t);
+    if (t !== 'select') setView('2d');
+  }, []);
+  const handlePan = useCallback((dir: string, active: boolean) => setPanState(prev => ({ ...prev, [dir]: active })), []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -164,7 +183,7 @@ function App({ initialUser }: any) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, [undo, redo, handleSave]);
 
   useEffect(() => {
     const onUnload = (e: BeforeUnloadEvent) => {
@@ -179,21 +198,27 @@ function App({ initialUser }: any) {
   // Bumped when the whole plan is replaced (imported, redrawn by the AI, built from the
   // drawing), so the 2D and 3D views frame the new plan instead of looking at empty space.
   const [fitKey, setFitKey] = useState(0);
+  const refit = useCallback(() => setFitKey(k => k + 1), []);
 
   // The Vastu report (with its one-click fixes) while the Vastu tab is open. Worked out from a
   // deferred copy of the plan, so dragging walls stays smooth.
   const deferredPlan = useDeferredValue(plan);
   const vastu = useMemo(() => (activeNav === 'vastu' ? vastuReport(deferredPlan) : null), [activeNav, deferredPlan]);
-  // A message for the chat sent from elsewhere (the Vastu tab's Explain with AI).
-  const [queuedPrompt, setQueuedPrompt] = useState<{ id: number; text: string }>();
-  const askAI = (text: string) => setQueuedPrompt(q => ({ id: (q?.id ?? 0) + 1, text }));
-  // "Fix with AI": the AI's changes come back already checked on the server (the score goes up,
-  // no room is lost); they are checked again here on the live plan, applied as one undo step,
-  // and described in the Vastu tab and the chat.
+
   const planRef = useRef(plan);
   planRef.current = plan;
   const [chatNote, setChatNote] = useState<{ id: number; lines: string[] }>();
-  const handleVastuFix = async (): Promise<string[]> => {
+
+  // Commits an AI-made change as one undo step and saves it. Returns notes for the chat.
+  const commitAndSave = useCallback(async (next: Plan): Promise<string[]> => {
+    const reconciled = commit(next);
+    setSelection(null);
+    if (!reconciled) return [];
+    const res = await persist(reconciled);
+    return res.error ? [`The plan was updated but could not be saved: ${res.error}`] : [];
+  }, [commit, persist]);
+
+  const handleVastuFix = useCallback(async (): Promise<string[]> => {
     if (readOnly) return ['The example plan is read-only. Switch to P1 or P2.'];
     const start = plan;
     const before = analyzeVastu(start);
@@ -206,11 +231,14 @@ function App({ initialUser }: any) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
         body: JSON.stringify({ planId: activePlanIndex === 0 ? 'p1' : 'p2', plan: withoutImage }),
       });
-      res = await response.json();
+      res = await readAiResponse(response, st => toast(st.message, st.level));
     } catch {
       return ['Could not reach the AI. Check your connection and try again.'];
     }
-    if (res?.error) return [res.error];
+    if (res?.error) {
+      toast(res.error, 'error');
+      return []; // shown as a toast, not repeated under the button
+    }
     if (!res?.success) return ['The AI did not answer. Try again.'];
     if (!res.changes.length) return [res.summary || 'The AI found no practical change that improves the Vastu score.'];
     if (planRef.current !== start) return ['The plan changed while the AI was working, so nothing was applied. Press Fix with AI again.'];
@@ -227,28 +255,27 @@ function App({ initialUser }: any) {
     ];
     setChatNote(n => ({ id: (n?.id ?? 0) + 1, lines }));
     return lines;
-  };
+  }, [readOnly, plan, activePlanIndex, commitAndSave]);
 
   // After a whole plan is built: its Vastu score in the chat, and the Vastu tab opened.
-  const vastuHook = (built: Plan) => {
+  const vastuHook = useCallback((built: Plan) => {
     const r = analyzeVastu(built);
     if (!r) return '';
     setActiveNav('vastu');
     const todo = r.checks.filter(c => c.status === 'bad' || c.status === 'fair').length;
     return ` Vastu score: ${r.score}/100${todo ? `, with ${todo} thing${todo === 1 ? '' : 's'} to improve` : ''}. The Vastu tab shows why, and how to fix it (set where North is on your plan first).`;
-  };
-  const refit = () => setFitKey(k => k + 1);
+  }, []);
 
   // A floor plan given as JSON (pasted in the chat or the Export tab) replaces the plan, as
   // one undo step. Anything in it that can't be used is listed in the notes.
-  const handleImportPlan = async (text: string): Promise<{ message: string; notes: string[] }> => {
+  const handleImportPlan = useCallback(async (text: string): Promise<{ message: string; notes: string[] }> => {
     if (readOnly) return { message: 'The example plan is read-only. Switch to P1 or P2 to import a plan.', notes: [] };
     const res = importPlanJson(plan, text);
     if ('error' in res) return { message: res.error, notes: [] };
     const notes = await commitAndSave(res.plan);
     refit();
     return { message: `${res.message} Undo brings back the previous plan.${vastuHook(res.plan)}`, notes: [...res.notes, ...notes] };
-  };
+  }, [readOnly, plan, commitAndSave, refit, vastuHook]);
 
   // Decode the uploaded drawing's pixels in the background, so building from it can follow
   // the walls drawn on it. Builds wait for it (ensureDrawingMask) in case it isn't ready yet.
@@ -256,58 +283,31 @@ function App({ initialUser }: any) {
   useEffect(() => {
     if (backgroundSrc) loadDrawingMask(backgroundSrc).catch(() => {});
   }, [backgroundSrc]);
-  const ensureDrawingMask = () => (backgroundSrc ? loadDrawingMask(backgroundSrc).catch(() => {}) : Promise.resolve());
+  const ensureDrawingMask = useCallback(() => (backgroundSrc ? loadDrawingMask(backgroundSrc).catch(() => {}) : Promise.resolve()), [backgroundSrc]);
 
   // Applies AI commands as one undo step and saves the result. Returns whether the plan
   // changed, what changed (in words, from comparing the plans) and notes for the chat.
-  const handleBuildCommands = async (cmds: BuildCommand[]): Promise<AiChange> => {
+  const handleBuildCommands = useCallback(async (cmds: BuildCommand[]): Promise<AiChange> => {
     if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
     if (cmds.some(c => c?.action === 'buildFromDrawing')) await ensureDrawingMask();
-    const { plan: next, errors } = applyCommands(plan, cmds);
+    const { plan: next, errors, missingTarget } = applyCommands(plan, cmds, { allOrNothing: true });
     const { changed, text } = describeChange(plan, next);
     if (changed) errors.push(...(await commitAndSave(next)));
-    return { changed, summary: text, notes: errors };
-  };
+    return { changed, summary: text, notes: errors, missingTarget };
+  }, [readOnly, plan, ensureDrawingMask, commitAndSave]);
 
   // Replaces the plan with a whole new one from the AI (its setPlan answer), as one undo step.
-  const handleSetPlan = async (payload: SetPlanPayload): Promise<AiChange> => {
+  const handleSetPlan = useCallback(async (payload: SetPlanPayload): Promise<AiChange> => {
     if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
     const res = applySetPlan(plan, payload, { replace: true });
     const { changed } = describeChange(plan, res.plan);
     const notes = changed ? await commitAndSave(res.plan) : [];
     if (changed) refit();
     return { changed, summary: changed ? `Replaced the plan: ${describeCounts(res.applied)}.` : 'Nothing on the plan changed.', notes: [...res.errors, ...notes] };
-  };
-
-  // Commits an AI-made change as one undo step and saves it. Returns notes for the chat.
-  const commitAndSave = async (next: Plan): Promise<string[]> => {
-    const reconciled = commit(next);
-    setSelection(null);
-    if (!reconciled) return [];
-    const res = await persist(reconciled);
-    return res.error ? [`The plan was updated but could not be saved: ${res.error}`] : [];
-  };
-
-  // The vision model finished reading the background image. Ignored if the image was
-  // replaced or removed meanwhile. Image first: a plan with no rooms yet is built from the
-  // drawing straight away (one undo step), and everything after that is an edit of it. A plan
-  // that already has rooms keeps them until the user chooses to build (the card asks).
-  const handleImageRead = async (src: string, analysis: NonNullable<Background['analysis']>) => {
-    if (readOnly || plan.background?.src !== src) return [];
-    const read = ops.updateBackground(plan, { analysis, use: undefined });
-    if (detectRooms(plan).length === 0 && analysis.extraction) {
-      const built = await buildDrawing(read);
-      if (built.plan) {
-        const notes = await commitAndSave(built.plan);
-        refit();
-        return [built.message + vastuHook(built.plan), ...built.notes, ...notes];
-      }
-    }
-    return commitAndSave(read);
-  };
+  }, [readOnly, plan, commitAndSave, refit]);
 
   // The plan built from the drawing (marked as built from it), or why it can't be built.
-  const buildDrawing = async (base: Plan): Promise<{ plan?: Plan; message: string; notes: string[] }> => {
+  const buildDrawing = useCallback(async (base: Plan): Promise<{ plan?: Plan; message: string; notes: string[] }> => {
     await ensureDrawingMask();
     const built = buildFromDrawing(base);
     if (built && 'error' in built) return { message: built.error, notes: [] };
@@ -321,10 +321,28 @@ function App({ initialUser }: any) {
     // Read by the older reader (room boxes only): building from that would put walls in the
     // wrong places, so nothing is built.
     return { message: 'This drawing was read by an older reader that doesn\'t give room sizes or positions precisely enough to build from. Press Re-read on the image card, then Build it for me.', notes: [] };
-  };
+  }, [ensureDrawingMask]);
+
+  // The vision model finished reading the background image. Ignored if the image was
+  // replaced or removed meanwhile. Image first: a plan with no rooms yet is built from the
+  // drawing straight away (one undo step), and everything after that is an edit of it. A plan
+  // that already has rooms keeps them until the user chooses to build (the card asks).
+  const handleImageRead = useCallback(async (src: string, analysis: NonNullable<Background['analysis']>) => {
+    if (readOnly || plan.background?.src !== src) return [];
+    const read = ops.updateBackground(plan, { analysis, use: undefined });
+    if (detectRooms(plan).length === 0 && analysis.extraction) {
+      const built = await buildDrawing(read);
+      if (built.plan) {
+        const notes = await commitAndSave(built.plan);
+        refit();
+        return [built.message + vastuHook(built.plan), ...built.notes, ...notes];
+      }
+    }
+    return commitAndSave(read);
+  }, [readOnly, plan, buildDrawing, commitAndSave, refit, vastuHook]);
 
   // The user chose what to do with the image: build its rooms, or keep it as reference.
-  const handleImageChoice = async (use: 'build' | 'context'): Promise<{ message: string; notes: string[] }> => {
+  const handleImageChoice = useCallback(async (use: 'build' | 'context'): Promise<{ message: string; notes: string[] }> => {
     const bg = plan.background;
     if (readOnly || !bg) return { message: '', notes: [] };
     if (use === 'context') {
@@ -335,10 +353,11 @@ function App({ initialUser }: any) {
     const notes = await commitAndSave(built.plan);
     refit();
     return { message: built.message + vastuHook(built.plan), notes: [...built.notes, ...notes] };
-  };
+  }, [readOnly, plan, buildDrawing, commitAndSave, refit, vastuHook]);
 
   return (
     <div className="app-layout">
+      <Toaster />
       <NavRail activeNav={activeNav} onSelectNav={setActiveNav} />
       <div className="app-main">
         <TopBar
@@ -356,14 +375,14 @@ function App({ initialUser }: any) {
         <div className="main-content">
           <Sidebar
             plan={plan} rooms={rooms} spaces={spaces} unit={unit}
-            tool={tool} setTool={t => { setTool(t); if (t !== 'select') setView('2d'); }}
+            tool={tool} setTool={chooseTool}
             selection={selection} setSelection={setSelection}
             onCommit={commit} readOnly={readOnly}
             activePlanIndex={activePlanIndex} onSwitchPlan={handleSwitchPlan}
             wallDims={wallDims} setWallDims={setWallDims}
             activeNav={activeNav} setActiveNav={setActiveNav}
             onImportPlan={handleImportPlan}
-            vastu={vastu} onAskAI={askAI} onFixWithAI={handleVastuFix}
+            vastu={vastu}  onFixWithAI={handleVastuFix}
           />
 
           <div className="canvas-container">
@@ -379,7 +398,7 @@ function App({ initialUser }: any) {
               <>
                 {/* Compass turns with the camera; north is -z in the 3D world (-y on the plan). */}
                 <Compass rotation={rotation} />
-                <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
+                <DPad onPan={handlePan} />
                 <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
                   <CameraController key={`${activePlanIndex}-${fitKey}`} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
                   <View3D plan={plan} rooms={rooms} unit={unit} selection={selection} onSelect={setSelection} cutaway={cutaway} />
@@ -395,10 +414,7 @@ function App({ initialUser }: any) {
             background={readOnly ? undefined : plan.background}
             onImageRead={handleImageRead}
             onImageChoice={handleImageChoice}
-            onSwitchView={setView}
-            setTool={setTool}
             onImportPlan={handleImportPlan}
-            queuedPrompt={queuedPrompt}
             chatNote={chatNote}
           />
         </div>

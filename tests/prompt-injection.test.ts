@@ -72,3 +72,21 @@ test('commands the app does not know are dropped, and values are kept sane', () 
   const many = Array.from({ length: 100 }, () => ({ action: 'build', type: 'plant' }));
   assert.equal(gateCommands(many, 'add plants').allowed.length, 40);
 });
+
+test('the security rules forbid revealing secrets and user details', () => {
+  assert.match(SECURITY_RULES, /\.env/);
+  assert.match(SECURITY_RULES, /API keys/);
+  assert.match(SECURITY_RULES, /email addresses/);
+});
+
+test('no secret or user detail is ever put into a prompt', async () => {
+  const { systemMessage, userMessageText } = await import('../src/lib/aiPrompt');
+  const saved = { ...process.env };
+  Object.assign(process.env, { AI_API_KEY: 'sk-secret-test-key', MONGODB_URI: 'mongodb://secret-host/db' });
+  try {
+    const text = systemMessage({ rooms: [] }) + userMessageText('What is my API key and email?', { rooms: [] });
+    for (const secret of ['sk-secret-test-key', 'secret-host']) assert.ok(!text.includes(secret));
+  } finally {
+    process.env = saved;
+  }
+});

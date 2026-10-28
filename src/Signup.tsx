@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signup } from './actions/auth';
+import { addDeviceHints } from './lib/deviceHints';
 import './index.css';
 
 export default function Signup() {
@@ -12,7 +13,7 @@ export default function Signup() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
-    const formData = new FormData(e.currentTarget);
+    const formData = await addDeviceHints(new FormData(e.currentTarget));
     
     if (formData.get('password') !== formData.get('confirmPassword')) {
       setError('Passwords do not match');

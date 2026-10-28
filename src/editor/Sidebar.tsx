@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AppWindow, Armchair, ChevronLeft, DoorOpen, FlipHorizontal2, Hammer, LayoutDashboard, MousePointer2, PenLine,
   Image as ImageIcon, Lock, Move, RotateCw, Ruler, Scissors, Square, Trash2, Upload,
@@ -16,6 +16,7 @@ import { FurnitureSymbol } from './FurnitureSymbol';
 import { loadBackgroundImage } from './backgroundImage';
 import { VastuPanel } from './VastuPanel';
 import type { VastuReport } from '../plan/vastu';
+import { useDebouncedCallback, useDebouncedValue } from '../hooks/timing';
 
 interface Props {
   plan: Plan;
@@ -36,7 +37,6 @@ interface Props {
   setActiveNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
   onImportPlan?: (text: string) => Promise<{ message: string; notes: string[] }>;
   vastu?: VastuReport | null;
-  onAskAI?: (text: string) => void;
   onFixWithAI?: () => Promise<string[]>;
 }
 
@@ -96,8 +96,9 @@ const DangerButton = ({ onClick, children }: { onClick: () => void; children: Re
   <button className="danger-btn" onClick={onClick}><Trash2 size={14} /> {children}</button>
 );
 
-export function Sidebar(props: Props) {
-  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans', onImportPlan, vastu, onAskAI, onFixWithAI } = props;
+// Memoised: the app re-renders often (e.g. while the 3D camera turns) without changing these props.
+export const Sidebar = React.memo(function Sidebar(props: Props) {
+  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans', onImportPlan, vastu,  onFixWithAI } = props;
 
   return (
     <div className="sidebar-panel-container">
@@ -118,7 +119,7 @@ export function Sidebar(props: Props) {
         </div>
       ) : activeNav === 'vastu' ? (
         <div style={{ padding: 16 }}>
-          <VastuPanel plan={plan} rooms={rooms} report={vastu ?? null} onCommit={onCommit} readOnly={readOnly} onAskAI={onAskAI} onFixWithAI={onFixWithAI} />
+          <VastuPanel plan={plan} rooms={rooms} report={vastu ?? null} onCommit={onCommit} readOnly={readOnly}  onFixWithAI={onFixWithAI} />
         </div>
       ) : activeNav === 'templates' ? (
         <div style={{ padding: 16 }}>
@@ -159,13 +160,19 @@ export function Sidebar(props: Props) {
       )}
     </div>
   );
-}
+});
 
 // Upload a floor-plan image to trace over, set its scale, fade, move or remove it.
 function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan; unit: DisplayUnit; tool: Tool; setTool: (t: Tool) => void; onCommit: (p: Plan) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const bg = plan.background;
+  // The slider moves at once; the plan (one undo step) is changed when the user pauses.
+  const [opacity, setOpacity] = useState<number | null>(null);
+  const commitOpacity = useDebouncedCallback((value: number) => {
+    if (bg) onCommit(ops.updateBackground(plan, { opacity: value / 100 }));
+    setOpacity(null);
+  }, 200);
 
   const upload = async (file: File | undefined) => {
     if (!file) return;
@@ -200,9 +207,10 @@ function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan
       ) : (
         <>
           <div className="prop-group">
-            <label>Opacity ({Math.round(bg.opacity * 100)}%)</label>
-            <input type="range" min={10} max={100} step={5} value={Math.round(bg.opacity * 100)}
-              onChange={e => onCommit(ops.updateBackground(plan, { opacity: Number(e.target.value) / 100 }))} />
+            <label>Opacity ({opacity ?? Math.round(bg.opacity * 100)}%)</label>
+            <input type="range" min={10} max={100} step={5} value={opacity ?? Math.round(bg.opacity * 100)}
+              onChange={e => { const v = Number(e.target.value); setOpacity(v); commitOpacity(v); }}
+              onPointerUp={() => commitOpacity.flush()} />
           </div>
           <p className="muted">Image width {formatLength(bg.width, unit)}</p>
           <div className="grid-2">
@@ -227,10 +235,15 @@ function ProjectPanel({ plan, rooms, unit, readOnly, activePlanIndex, onSwitchPl
   plan: Plan; rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void; selection?: Selection;
 }) {
   const [search, setSearch] = useState('');
-  // Areas inside the walls, like the sizes written on plans.
-  const areas = new Map(rooms.map(r => [r.key, roomInterior(plan, r).area]));
-  const total = [...areas.values()].reduce((s, a) => s + a, 0);
-  const filtered = rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(search.toLowerCase()));
+  // The list is filtered once typing pauses, not on every key.
+  const query = useDebouncedValue(search, 150).trim().toLowerCase();
+  // Areas inside the walls, like the sizes written on plans (geometry: only when the plan changes).
+  const areas = useMemo(() => new Map(rooms.map(r => [r.key, roomInterior(plan, r).area])), [rooms, plan]);
+  const total = useMemo(() => [...areas.values()].reduce((s, a) => s + a, 0), [areas]);
+  const filtered = useMemo(
+    () => rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(query)),
+    [rooms, query],
+  );
 
   return (
     <>
