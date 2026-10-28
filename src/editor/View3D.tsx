@@ -28,7 +28,8 @@ interface Props {
   cutaway: boolean;
 }
 
-export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Props) {
+// Memoised: the parent re-renders while the camera turns, but the scene only changes with its props.
+export const View3D = React.memo(function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Props) {
   const isSel = (kind: string, id: string) => selection?.kind === kind && selection.id === id;
   return (
     <>
@@ -68,7 +69,7 @@ export function View3D({ plan, rooms, unit, selection, onSelect, cutaway }: Prop
       })}
     </>
   );
-}
+});
 
 function RoomFloor({ plan, room, unit, selected, labelHeight, onClick }: { plan: Plan; room: Room; unit: DisplayUnit; selected: boolean; labelHeight: number; onClick: (e: ThreeEvent<MouseEvent>) => void }) {
   const geometry = useMemo(() => floorGeometry(room.polygon), [room.polygon]);

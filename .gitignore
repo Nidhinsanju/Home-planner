@@ -13,7 +13,7 @@ dist-ssr
 out
 *.local
 .env*
-
+!.env.example
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -29,5 +29,6 @@ out
 /training-data/
 /training-data.zip
 /.training-build/
+/.test-build/
 train_kaggle.py
 .kaggle

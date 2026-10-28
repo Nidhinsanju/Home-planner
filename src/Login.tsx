@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { login } from './actions/auth';
+import { addDeviceHints } from './lib/deviceHints';
 
 export default function Login() {
   const router = useRouter();
@@ -11,7 +12,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
-    const formData = new FormData(e.currentTarget);
+    const formData = await addDeviceHints(new FormData(e.currentTarget));
     
     const res = await login(formData);
     

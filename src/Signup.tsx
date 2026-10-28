@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signup } from './actions/auth';
+import { addDeviceHints } from './lib/deviceHints';
 import './index.css';
 
 export default function Signup() {
@@ -12,7 +13,7 @@ export default function Signup() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
-    const formData = new FormData(e.currentTarget);
+    const formData = await addDeviceHints(new FormData(e.currentTarget));
     
     if (formData.get('password') !== formData.get('confirmPassword')) {
       setError('Passwords do not match');
@@ -52,12 +53,12 @@ export default function Signup() {
             
             <div className="input-group">
               <label>Create Password</label>
-              <input type="password" name="password" required placeholder="Create password" />
+              <input type="password" name="password" required minLength={8} maxLength={128} placeholder="Create password (8+ characters)" />
             </div>
 
             <div className="input-group">
               <label>Confirm Password</label>
-              <input type="password" name="confirmPassword" required placeholder="Confirm password" />
+              <input type="password" name="confirmPassword" required minLength={8} maxLength={128} placeholder="Confirm password" />
             </div>
           </div>
           

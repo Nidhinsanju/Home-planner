@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AppWindow, Armchair, ChevronLeft, DoorOpen, FlipHorizontal2, Hammer, LayoutDashboard, MousePointer2, PenLine,
   Image as ImageIcon, Lock, Move, RotateCw, Ruler, Scissors, Square, Trash2, Upload,
@@ -14,6 +14,9 @@ import { DisplayUnit, formatArea, formatLength, fromDisplay, round2, toDisplay }
 import type { Selection, Tool } from './Editor2D';
 import { FurnitureSymbol } from './FurnitureSymbol';
 import { loadBackgroundImage } from './backgroundImage';
+import { VastuPanel } from './VastuPanel';
+import type { VastuReport } from '../plan/vastu';
+import { useDebouncedCallback, useDebouncedValue } from '../hooks/timing';
 
 interface Props {
   plan: Plan;
@@ -30,8 +33,11 @@ interface Props {
   onSwitchPlan: (i: 0 | 1 | 2) => void;
   wallDims: { thickness: number; height: number };
   setWallDims: (d: { thickness: number; height: number }) => void;
-  activeNav?: 'plans' | 'rooms' | 'settings' | 'templates' | 'export';
-  setActiveNav?: (nav: 'plans' | 'rooms' | 'settings' | 'templates' | 'export') => void;
+  activeNav?: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export';
+  setActiveNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
+  onImportPlan?: (text: string) => Promise<{ message: string; notes: string[] }>;
+  vastu?: VastuReport | null;
+  onFixWithAI?: () => Promise<string[]>;
 }
 
 // Number input that commits on Enter/blur (one undo step per edit, no rounding fights while typing).
@@ -90,8 +96,9 @@ const DangerButton = ({ onClick, children }: { onClick: () => void; children: Re
   <button className="danger-btn" onClick={onClick}><Trash2 size={14} /> {children}</button>
 );
 
-export function Sidebar(props: Props) {
-  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans' } = props;
+// Memoised: the app re-renders often (e.g. while the 3D camera turns) without changing these props.
+export const Sidebar = React.memo(function Sidebar(props: Props) {
+  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans', onImportPlan, vastu,  onFixWithAI } = props;
 
   return (
     <div className="sidebar-panel-container">
@@ -109,6 +116,10 @@ export function Sidebar(props: Props) {
             </div>
           </div>
           <BackgroundSection plan={plan} unit={unit} tool={tool} setTool={setTool} onCommit={onCommit} />
+        </div>
+      ) : activeNav === 'vastu' ? (
+        <div style={{ padding: 16 }}>
+          <VastuPanel plan={plan} rooms={rooms} report={vastu ?? null} onCommit={onCommit} readOnly={readOnly}  onFixWithAI={onFixWithAI} />
         </div>
       ) : activeNav === 'templates' ? (
         <div style={{ padding: 16 }}>
@@ -133,6 +144,7 @@ export function Sidebar(props: Props) {
               <Upload size={14} /> Download Plan JSON
             </button>
           </div>
+          {onImportPlan && !readOnly && <ImportPlan onImport={onImportPlan} />}
         </div>
       ) : (
         <ProjectPanel
@@ -148,13 +160,19 @@ export function Sidebar(props: Props) {
       )}
     </div>
   );
-}
+});
 
 // Upload a floor-plan image to trace over, set its scale, fade, move or remove it.
 function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan; unit: DisplayUnit; tool: Tool; setTool: (t: Tool) => void; onCommit: (p: Plan) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const bg = plan.background;
+  // The slider moves at once; the plan (one undo step) is changed when the user pauses.
+  const [opacity, setOpacity] = useState<number | null>(null);
+  const commitOpacity = useDebouncedCallback((value: number) => {
+    if (bg) onCommit(ops.updateBackground(plan, { opacity: value / 100 }));
+    setOpacity(null);
+  }, 200);
 
   const upload = async (file: File | undefined) => {
     if (!file) return;
@@ -189,9 +207,10 @@ function BackgroundSection({ plan, unit, tool, setTool, onCommit }: { plan: Plan
       ) : (
         <>
           <div className="prop-group">
-            <label>Opacity ({Math.round(bg.opacity * 100)}%)</label>
-            <input type="range" min={10} max={100} step={5} value={Math.round(bg.opacity * 100)}
-              onChange={e => onCommit(ops.updateBackground(plan, { opacity: Number(e.target.value) / 100 }))} />
+            <label>Opacity ({opacity ?? Math.round(bg.opacity * 100)}%)</label>
+            <input type="range" min={10} max={100} step={5} value={opacity ?? Math.round(bg.opacity * 100)}
+              onChange={e => { const v = Number(e.target.value); setOpacity(v); commitOpacity(v); }}
+              onPointerUp={() => commitOpacity.flush()} />
           </div>
           <p className="muted">Image width {formatLength(bg.width, unit)}</p>
           <div className="grid-2">
@@ -216,10 +235,15 @@ function ProjectPanel({ plan, rooms, unit, readOnly, activePlanIndex, onSwitchPl
   plan: Plan; rooms: Room[]; unit: DisplayUnit; readOnly: boolean; activePlanIndex: 0 | 1 | 2; onSwitchPlan: (i: 0 | 1 | 2) => void; setSelection: (s: Selection) => void; selection?: Selection;
 }) {
   const [search, setSearch] = useState('');
-  // Areas inside the walls, like the sizes written on plans.
-  const areas = new Map(rooms.map(r => [r.key, roomInterior(plan, r).area]));
-  const total = [...areas.values()].reduce((s, a) => s + a, 0);
-  const filtered = rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(search.toLowerCase()));
+  // The list is filtered once typing pauses, not on every key.
+  const query = useDebouncedValue(search, 150).trim().toLowerCase();
+  // Areas inside the walls, like the sizes written on plans (geometry: only when the plan changes).
+  const areas = useMemo(() => new Map(rooms.map(r => [r.key, roomInterior(plan, r).area])), [rooms, plan]);
+  const total = useMemo(() => [...areas.values()].reduce((s, a) => s + a, 0), [areas]);
+  const filtered = useMemo(
+    () => rooms.filter(r => (r.label?.name || roomType(r.label?.type)?.name || 'Unnamed room').toLowerCase().includes(query)),
+    [rooms, query],
+  );
 
   return (
     <>
@@ -303,6 +327,34 @@ function ProjectPanel({ plan, rooms, unit, readOnly, activePlanIndex, onSwitchPl
         )}
       </div>
     </>
+  );
+}
+
+// Builds the plan from a JSON floor plan, pasted or from a file: one written by another AI
+// (rooms as polygons in feet, walls, doors, windows) or this app's own download. It replaces
+// the plan; Undo brings the old one back.
+function ImportPlan({ onImport }: { onImport: (text: string) => Promise<{ message: string; notes: string[] }> }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string[]>([]);
+  const run = async (json: string) => {
+    if (!json.trim()) return;
+    setBusy(true);
+    const { message, notes } = await onImport(json);
+    setResult([message, ...notes]);
+    setBusy(false);
+  };
+  return (
+    <div className="sidebar-section">
+      <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Import Plan JSON</h3>
+      <p className="muted">Paste a floor plan as JSON (for example one written by an AI), or choose a .json file. It replaces the current plan; Undo brings it back.</p>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={6} placeholder='{"rooms": [{"name": "Kitchen", "type": "kitchen", "polygon": [[0, 0], [10, 0], [10, 8], [0, 8]]}], "doors": [], "windows": []}'
+        style={{ width: '100%', fontFamily: 'monospace', fontSize: 11, marginBottom: 8, boxSizing: 'border-box' }} />
+      <button className="primary-btn" style={{ marginBottom: 8 }} disabled={busy || !text.trim()} onClick={() => run(text)}>Build plan from JSON</button>
+      <input type="file" accept=".json,application/json,text/plain" disabled={busy}
+        onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) run(await f.text()); }} />
+      {result.map((line, i) => <p key={i} className={i === 0 ? 'muted' : 'notice'} style={{ marginTop: 8 }}>{line}</p>)}
+    </div>
   );
 }
 

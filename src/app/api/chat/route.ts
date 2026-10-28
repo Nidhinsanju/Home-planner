@@ -1,16 +1,21 @@
 import { runChat, type ChatMode } from '../../../lib/aiChat';
+import { clientAddressOf, requestRateLimit, tooManyRequests } from '../../../lib/rateLimit';
+import { streamAiResult } from '../../../lib/aiStream';
 
 // A route (not a server action) so the browser can abort it: when the user presses Stop
 // the request disconnects, request.signal fires, and the AI call is cancelled.
 export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
+  // Per network address, before any work: also covers requests without a valid login.
+  const limited = requestRateLimit('api', clientAddressOf(request.headers));
+  if (!limited.ok) return tooManyRequests(limited);
   const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
   if (!token) return Response.json({ error: 'Not logged in' }, { status: 401 });
 
   let body: any;
   try {
-    body = await request.json();
+    body = await request.json();  
   } catch {
     return Response.json({ error: 'Invalid request' }, { status: 400 });
   }
@@ -19,6 +24,5 @@ export async function POST(request: Request) {
 
   const image = typeof body.image === 'string' ? body.image : undefined;
   const mode: ChatMode = ['auto', 'cloud', 'step'].includes(body.mode) ? body.mode : 'auto';
-  const result = await runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal, image, mode);
-  return Response.json(result);
+  return streamAiResult(() => runChat(prompt, token, String(body.planId ?? ''), body.sceneData ?? {}, request.signal, image, mode));
 }

@@ -1,40 +1,39 @@
-import { z } from 'zod';
 import { ChatHistory } from './db';
 import { getUserByToken, isPlanId } from './session';
 import { parseCommands } from './parseCommands';
 import { systemMessage, userMessageText } from './aiPrompt';
 import { cloudCallsLeft, cloudEnabled, planRequest, type CloudStep } from './cloudAI';
-import { aiClient, aiErrorMessage, CHAT_MAX_TOKENS, imageInfo, logAiCall, withModels } from './aiClient';
-import { applySetPlan, parseSetPlan, SetPlanSchema, type SetPlanPayload } from '../plan/setPlan';
+import { aiClient, aiErrorResult, CHAT_MAX_TOKENS, imageInfo, logAiCall, withModels } from './aiClient';
+import { parseChatReply } from './modelReply';
+import { cleanUserText, gateCommands } from './promptSafety';
+import { aiRateLimit } from './rateLimit';
+import { gateDeletes, missingPlanRef } from './planRefs';
+import { applySetPlan, type SetPlanPayload } from '../plan/setPlan';
+import { normalizePlanPayload } from '../plan/importPlan';
 import { emptyPlan } from '../plan/types';
 
 // How a chat message is handled:
-// - "auto": the chat model answers. With the optional planner enabled (cloudAI.ts) it can reply
+// - "auto": the chat model answers. With a planner model set (AI_PLANNER_MODEL) it can reply
 //   {"action": "askExpert"} for a request too complex for it, and the planner plans it as
 //   simple steps instead, which the browser then has the chat model carry out ("step" mode).
 // - "cloud": straight to the planner. The browser uses this when the chat model's commands
 //   for a request could not be applied.
 // - "step": one step of a plan, run on the chat model without touching the chat history.
+//
+// The model is asked for plain text or JSON only (no tool calling), so any chat model works;
+// its reply is read by parseChatReply, and only known, sane commands come out of here.
 export type ChatMode = 'auto' | 'cloud' | 'step';
 
 export type ChatResult =
   | { success: true; reply: string; buildCommands?: Record<string, any>[]; setPlan?: SetPlanPayload; steps?: CloudStep[]; cloud?: boolean }
-  | { error: string }
+  | { error: string; busy?: true }
   | { aborted: true };
 
 const SET_PLAN_RETRIES = 2;
-
-// The set_plan tool: replaces the whole plan with one given in absolute coordinates.
-const SET_PLAN_TOOL = {
-  type: 'function' as const,
-  function: {
-    name: 'set_plan',
-    description: 'Replace the WHOLE plan with this one (the uploaded background image is kept). All coordinates in feet: x grows east, y grows south. '
-      + 'Each room is a polygon along its wall centre-lines; rooms that touch must share the exact same edge coordinates, and their walls are created automatically. '
-      + 'Add "walls" only for extra walls, and for open-plan boundaries with divider: true. Doors and windows: "at" = a point on any wall, or wallId (from "walls") + offsetFt.',
-    parameters: z.toJSONSchema(SetPlanSchema, { io: 'input' }) as Record<string, unknown>,
-  },
-};
+const MAX_SCENE_CHARS = 300_000; // a described plan is far smaller; anything bigger is refused
+const MAX_IMAGE_CHARS = 8_000_000; // the browser sends at most ~2000 px JPEGs
+// Requests for a whole new layout (the only time a plan built from a drawing may be replaced).
+const REDESIGN = /\b(redesign|re-design|redo|redraw|start (over|again|from scratch)|from scratch|new (plan|design|layout|house)|design (a|an|me|my|the whole)|whole (plan|house|layout))\b/i;
 
 // Runs one chat turn. When `signal` aborts (the user pressed Stop), the AI request is
 // cancelled and nothing is written to the chat history, so a stopped turn leaves no trace.
@@ -42,14 +41,23 @@ const SET_PLAN_TOOL = {
 // it; it is attached to the latest message only and not stored in the history.
 // Turns that change the plan are saved to the history by the browser (saveChatTurn) once it
 // knows what was actually applied, so the history never claims changes that didn't happen.
-export async function runChat(prompt: string, token: string, planId: string, sceneData: unknown, signal?: AbortSignal, image?: string, mode: ChatMode = 'auto'): Promise<ChatResult> {
+export async function runChat(rawPrompt: unknown, token: string, planId: string, sceneData: unknown, signal?: AbortSignal, image?: string, mode: ChatMode = 'auto'): Promise<ChatResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
-  const hasImage = typeof image === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(image);
-  const hasDrawing = hasImage || !!(sceneData as any)?.referenceDrawing;
+  const prompt = cleanUserText(rawPrompt);
+  if (!prompt) return { error: 'Empty message.' };
 
-  // Only signed-in users may use the AI.
+  // Only signed-in users may use the AI, and only so often.
   const user = await getUserByToken(token);
   if (!user) return { error: 'Your session has expired. Please log in again.' };
+  // "Replace the balcony" with no balcony on the plan: said so, without asking the model.
+  const missing = mode === 'step' ? null : missingPlanRef(prompt, sceneData);
+  if (missing) return { success: true, reply: missing };
+  const limited = aiRateLimit(user._id);
+  if (!limited.ok) return { error: limited.error };
+
+  if (JSON.stringify(sceneData ?? {}).length > MAX_SCENE_CHARS) return { error: 'This plan is too large to send to the AI.' };
+  const hasImage = typeof image === 'string' && image.length <= MAX_IMAGE_CHARS && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image);
+  const hasDrawing = hasImage || !!(sceneData as any)?.referenceDrawing;
 
   let historyDoc: any = null;
   if (mode !== 'step') {
@@ -59,7 +67,9 @@ export async function runChat(prompt: string, token: string, planId: string, sce
       // chat still works without history
     }
   }
-  const previous = (historyDoc?.messages ?? []).slice(-9).map((m: any) => ({ role: m.role, content: m.content }));
+  const previous = (historyDoc?.messages ?? []).slice(-9)
+    .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+    .map((m: any) => ({ role: m.role, content: String(m.content ?? '').slice(0, 4000) }));
   const saveTurn = async (reply: string) => {
     if (!historyDoc) return;
     historyDoc.messages.push({ role: 'user', content: prompt });
@@ -80,59 +90,53 @@ export async function runChat(prompt: string, token: string, planId: string, sce
   if (mode === 'cloud') return askCloud();
 
   const maxTokens = CHAT_MAX_TOKENS();
+  const mayReplace = !(sceneData as any)?.builtFromDrawing || REDESIGN.test(prompt);
   const info = hasImage ? imageInfo(image!) : undefined;
   const userText = (canAskExpert: boolean) => userMessageText(prompt, sceneData, hasImage, canAskExpert);
+  // Commands from the prompt's own examples, pasted into a chatty answer, are not run.
+  const examples = new Set(parseCommands(systemMessage({})).commands.map(c => JSON.stringify(c)));
 
-  // One answer from the chat model: JSON commands in its text, or a set_plan tool call. An
-  // invalid set_plan is returned to the model with the exact problems, up to twice.
-  const askModel = async (canAskExpert: boolean): Promise<{ commands: Record<string, any>[]; text: string; setPlan?: SetPlanPayload } | { error: string }> => {
+  // One answer from the chat model: JSON commands in its text, or a whole new plan
+  // ({"action": "setPlan"}). An invalid plan is returned to the model with the exact problems.
+  const askModel = async (canAskExpert: boolean): Promise<{ commands: Record<string, any>[]; text: string; setPlan?: SetPlanPayload; notes: string[] } | { error: string }> => {
     const apiMessages: any[] = [
       { role: 'system', content: systemMessage(sceneData, hasDrawing, canAskExpert) },
       ...previous,
       { role: 'user', content: hasImage ? [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: userText(canAskExpert) }] : userText(canAskExpert) },
     ];
     for (let attempt = 0; ; attempt++) {
-      // Each model in AI_MODELS is tried in turn until one answers (see aiClient.ts).
+      // Each configured model is tried in turn until one answers (see aiClient.ts).
       const { result: response, model } = await withModels('chat', m => aiClient().chat.completions.create(
-        { model: m, messages: apiMessages, temperature: 0.2, max_tokens: maxTokens, tools: [SET_PLAN_TOOL] },
+        { model: m, messages: apiMessages, temperature: 0.2, max_tokens: maxTokens },
         { signal },
-      ), signal);
+      ), signal, hasImage ? 'vision' : 'chat');
       logAiCall(`chat#${attempt + 1}`, model, response, info);
       const choice = response.choices[0];
       if (choice?.finish_reason === 'length') {
         return { error: `My answer was cut off at ${maxTokens} tokens, so nothing was changed. Try a smaller request, or raise AI_MAX_TOKENS in .env.` };
       }
-      const text = choice?.message.content?.trim() || '';
-      const call = choice?.message.tool_calls?.find(c => c.type === 'function' && c.function.name === 'set_plan');
-      if (call && call.type === 'function') {
-        let problems: string[];
-        let raw: unknown = null;
-        try {
-          raw = JSON.parse(call.function.arguments || '{}');
-        } catch {
-          raw = undefined;
+      const content = choice?.message.content ?? '';
+      const reply = parseChatReply(content);
+      const notes = reply.dropped.length ? [`I ignored ${reply.dropped.length} change(s) the app doesn't support.`] : [];
+
+      if (reply.setPlan) {
+        if (!mayReplace) {
+          return { commands: [], text: reply.text, notes: [...notes, 'This plan was built from your drawing, so I keep it and only edit it. Ask me to "redesign the whole plan" if you want a new one.'] };
         }
-        const parsed = raw === undefined ? { errors: ['arguments are not valid JSON'] } : parseSetPlan(raw);
-        if ('payload' in parsed) {
-          // Dry run on an empty plan: rooms that don't close, doors off any wall...
-          problems = applySetPlan(emptyPlan(), parsed.payload, { replace: true }).errors;
-          if (problems.length === 0) return { commands: [], text, setPlan: parsed.payload };
-        } else {
-          problems = parsed.errors;
-        }
-        console.warn(`[ai] set_plan#${attempt + 1} rejected: ${problems.join('; ')}`);
+        // Read as tolerantly as a pasted plan, then a dry run: rooms that don't close, doors off any wall...
+        const parsed = normalizePlanPayload(reply.setPlan);
+        const problems = 'payload' in parsed ? applySetPlan(emptyPlan(), parsed.payload, { replace: true }).errors : parsed.errors;
+        if ('payload' in parsed && problems.length === 0) return { commands: [], text: reply.text, setPlan: parsed.payload, notes };
+        console.warn(`[ai] setPlan#${attempt + 1} rejected: ${problems.join('; ')}`);
         if (attempt >= SET_PLAN_RETRIES) return { error: `I couldn't produce a valid plan, so nothing was changed. Problems: ${problems.slice(0, 4).join('; ')}` };
-        apiMessages.push({ role: 'assistant', content: text || null, tool_calls: [call] });
-        apiMessages.push({ role: 'tool', tool_call_id: call.id, content: `set_plan was NOT applied. Fix these problems and call set_plan again with the complete plan:\n${problems.join('\n')}` });
+        apiMessages.push({ role: 'assistant', content });
+        apiMessages.push({ role: 'user', content: `That plan was NOT applied. Fix these problems and reply again with the complete {"action": "setPlan", "plan": {...}} JSON only:\n${problems.join('\n')}` });
         continue;
       }
-      // The model sometimes pastes a prompt example into a chatty explanation ("For example:
-      // {...}"); don't run those. A real command comes back as (nearly) bare JSON, so an example
-      // is only dropped when it is wrapped in a sentence or more of prose.
-      const examples = new Set(parseCommands(systemMessage({})).commands.map(c => JSON.stringify(c)));
-      const { commands: found, text: rest } = parseCommands(text);
-      const commands = rest.length > 40 ? found.filter(c => !examples.has(JSON.stringify(c))) : found;
-      return { commands, text: rest };
+      // An example from the instructions pasted into a chatty explanation ("For example: {...}")
+      // is not run; a real command comes back as (nearly) bare JSON.
+      const commands = reply.text.length > 40 ? reply.commands.filter(c => !examples.has(JSON.stringify(c))) : reply.commands;
+      return { commands, text: reply.text, notes };
     }
   };
 
@@ -151,19 +155,25 @@ export async function runChat(prompt: string, token: string, planId: string, sce
       if (signal?.aborted) return { aborted: true };
       if ('error' in answer) return answer;
     }
-    const { text, setPlan } = answer;
-    const commands = answer.commands.filter(c => c.action !== 'askExpert');
+    // Destructive commands only run when the user's own words asked for them, and a delete
+    // only removes what the user named (not the car in the parking, nor the room next to it).
+    const gated = gateCommands(answer.commands.filter(c => c.action !== 'askExpert'), prompt);
+    const deletes = gateDeletes(gated.allowed, prompt, sceneData);
+    const allowed = deletes.allowed, blocked = [...gated.blocked, ...deletes.blocked];
+    // What the model asked for (actions and targets only), to see why a change happened.
+    if (answer.commands.length) console.info(`[ai] chat commands: ${answer.commands.map(c => [c.action, c.type, c.id ?? c.name].filter(Boolean).join(' ')).join('; ').slice(0, 500)}${blocked.length ? ` (${blocked.length} blocked)` : ''}`);
+    const text = [answer.text, ...answer.notes, ...blocked].filter(Boolean).join('\n');
 
-    if (setPlan) return { success: true, setPlan, reply: text };
-    if (commands.length > 0) {
-      return { success: true, buildCommands: commands, reply: text, cloud: mode === 'auto' && (await cloudReady()) };
+    if (answer.setPlan) return { success: true, setPlan: answer.setPlan, reply: text };
+    if (allowed.length > 0) {
+      return { success: true, buildCommands: allowed, reply: text, cloud: mode === 'auto' && (await cloudReady()) };
     }
-    if (!text) return { error: "The AI returned an empty answer. Please try rephrasing." };
+    if (!text) return { error: 'The AI returned an empty answer. Please try rephrasing.' };
     await saveTurn(text);
     return { success: true, reply: text };
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] chat error:', error?.status, error?.message);
-    return { error: aiErrorMessage(error) };
+    return aiErrorResult(error);
   }
 }

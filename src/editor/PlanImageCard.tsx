@@ -3,6 +3,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Background } from '../plan/types';
 import { imageSize } from './backgroundImage';
+import { readAiResponse } from '../lib/aiStreamClient';
+import { toast } from '../Toasts';
 
 // Chat card for an uploaded floor plan. A newly uploaded image is sent to the vision model;
 // the card then shows what it found and asks whether to build those rooms or just keep the
@@ -46,9 +48,12 @@ export function PlanImageCard({ background, planId, onImageRead, onImageChoice, 
         body: JSON.stringify({ planId, image: imageSrc, width, height, force }),
         signal: controller.signal,
       });
-      const res = await response.json();
+      const res = await readAiResponse(response, st => toast(st.message, st.level));
       if (controller.signal.aborted || res.aborted) return;
-      if (res.error) throw new Error(res.error);
+      if (res.error) {
+        toast(res.error, 'error');
+        throw new Error(res.error);
+      }
       const notes = await handlers.current.onImageRead(imageSrc, { summary: res.summary, rooms: res.rooms, extraction: res.extraction, imageWidth: res.imageWidth, imageHeight: res.imageHeight });
       notes.forEach(handlers.current.onMessage);
       setStatus('idle');

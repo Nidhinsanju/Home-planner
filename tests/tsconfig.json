@@ -1,0 +1,14 @@
+{
+  // Compiles the tests (and the app modules they use) for Node's built-in test runner.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "rootDir": "..",
+    "outDir": "../.test-build",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["*.test.ts"]
+}

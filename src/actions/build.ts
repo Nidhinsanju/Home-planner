@@ -2,6 +2,7 @@
 
 import { connectToDatabase, Build, BuildData } from '../lib/db';
 import { getUserByToken, isPlanId } from '../lib/session';
+import { requestRateLimit } from '../lib/rateLimit';
 import { ExtractionSchema } from '../plan/extraction';
 
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
@@ -58,18 +59,21 @@ export async function saveBuild(planId: 'p1' | 'p2', buildData: BuildData, token
       labels: arr(p.labels),
       items: arr(p.items),
       ...(bg ? { background: bg } : {}),
+      ...(Number.isFinite(Number(p.northDeg)) ? { northDeg: ((Number(p.northDeg) % 360) + 360) % 360 } : {}),
     },
   };
 
   try {
     const user = await getUserByToken(token);
     if (!user) return { error: 'Session expired, please log in again' };
+    const limited = requestRateLimit('save', user._id);
+    if (!limited.ok) return { error: limited.error };
 
     await connectToDatabase();
-    await Build.findOneAndUpdate(
+    await Build.updateOne(
       { userId: user._id, planId },
       { $set: { data } },
-      { upsert: true, new: true }
+      { upsert: true }
     );
 
     return { success: true };

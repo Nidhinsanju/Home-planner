@@ -9,10 +9,10 @@
     "start": "next start",
     "lint": "oxlint src",
     "typecheck": "tsc --noEmit",
-    "training-data": "tsc -p scripts/training-data/tsconfig.json && node scripts/training-data/run.cjs"
+    "training-data": "tsc -p scripts/training-data/tsconfig.json && node scripts/training-data/run.cjs",
+    "test": "tsc -p tests/tsconfig.json && node tests/run.cjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.133.0",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.8.0",
     "bcryptjs": "^3.0.3",

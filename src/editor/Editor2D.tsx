@@ -8,6 +8,8 @@ import * as ops from '../plan/ops';
 import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
 import { Compass } from '../UI';
+import { ZONE_NAMES, type VastuReport } from '../plan/vastu';
+import { useRafThrottle } from '../hooks/timing';
 import {
   MousePointer2, Square, DoorOpen, AppWindow, Box, Type,
   MoveHorizontal, Trash2, Maximize2, Crosshair, Layers, Lightbulb
@@ -28,7 +30,12 @@ interface Props {
   onCommit: (next: Plan) => void;
   readOnly: boolean;
   wallDims: { thickness: number; height: number };
+  fitKey?: number; // changes when the whole plan was replaced: frame it again
+  vastu?: VastuReport | null; // drawn as the Vastu grid over the plan (while the Vastu tab is open)
 }
+
+// What a pointer move needs from its event, so the move can be handled on the next frame.
+type PointerSample = { clientX: number; clientY: number; shiftKey: boolean; target: EventTarget | null };
 
 type Drag =
   | { mode: 'pan'; startPx: Vec; startView: View; target?: Selection }
@@ -62,7 +69,7 @@ const HINTS: Record<string, string> = {
   calibrate: 'Set scale: click both ends of something on the image whose real length you know (e.g. a wall), then type that length.',
 };
 
-export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims }: Props) {
+export const Editor2D = React.memo(function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims, fitKey, vastu }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -117,16 +124,21 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     setView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, scale: Math.max(3, Math.min(60, scale)) });
   }, [plan, size]);
 
-  // Fit once the container has its real size.
+  // Fit once the container has its real size, and again whenever the whole plan is replaced.
   const fitted = useRef(false);
+  const lastFitKey = useRef(fitKey);
   useEffect(() => {
     if (!fitted.current && size.w !== 800) {
       fitted.current = true;
       fitView();
+    } else if (fitKey !== lastFitKey.current) {
+      fitView();
     }
-  }, [size, fitView]);
+    lastFitKey.current = fitKey;
+  }, [size, fitView, fitKey]);
 
-  const toWorld = (clientX: number, clientY: number): Vec => {
+  // Only reads the SVG element, so it never needs to change.
+  const toWorld = useCallback((clientX: number, clientY: number): Vec => {
     const svg = svgRef.current;
     const ctm = svg?.getScreenCTM();
     if (!svg || !ctm) return { x: 0, y: 0 };
@@ -135,22 +147,35 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     pt.y = clientY;
     const p = pt.matrixTransform(ctm.inverse());
     return { x: p.x, y: p.y };
-  };
+  }, []);
 
+  // Wheel zoom, applied once per frame: a trackpad sends many small wheel events per frame,
+  // which are added up and zoom in one step.
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const w = toWorld(e.clientX, e.clientY);
+    let delta = 0, at = { x: 0, y: 0 }, frame = 0;
+    const apply = () => {
+      frame = 0;
+      const w = toWorld(at.x, at.y), d = delta;
+      delta = 0;
       setView(v => {
-        const scale = Math.max(2, Math.min(200, v.scale * Math.exp(-e.deltaY * 0.0015)));
+        const scale = Math.max(2, Math.min(200, v.scale * Math.exp(-d * 0.0015)));
         return { scale, cx: w.x - ((w.x - v.cx) * v.scale) / scale, cy: w.y - ((w.y - v.cy) * v.scale) / scale };
       });
     };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      delta += e.deltaY;
+      at = { x: e.clientX, y: e.clientY };
+      if (!frame) frame = requestAnimationFrame(apply);
+    };
     svg.addEventListener('wheel', onWheel, { passive: false });
-    return () => svg.removeEventListener('wheel', onWheel);
-  });
+    return () => {
+      svg.removeEventListener('wheel', onWheel);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [toWorld]);
 
   // ---- snapping -------------------------------------------------------------------------
 
@@ -298,7 +323,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
 
   // ---- pointer --------------------------------------------------------------------------
 
-  const targetOf = (e: React.PointerEvent): Selection => {
+  const targetOf = (e: { target: EventTarget | null }): Selection => {
     const el = (e.target as Element).closest('[data-kind]');
     if (!el) return null;
     return { kind: el.getAttribute('data-kind') as any, id: el.getAttribute('data-id')! };
@@ -364,7 +389,9 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     drag.current = { mode: 'pan', startPx, startView: view, target };
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
+  // Moves are handled at most once per frame (see movePointer below): a drag recomputes the
+  // plan and its rooms, which is too much work to repeat for every event of a high-rate mouse.
+  const handlePointerMove = (e: PointerSample) => {
     const world = toWorld(e.clientX, e.clientY);
     setCursor(world);
     const d = drag.current;
@@ -414,7 +441,10 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     }
   };
 
+  const movePointer = useRafThrottle(handlePointerMove);
+
   const onPointerUp = (e: React.PointerEvent) => {
+    movePointer.flush(); // the last move lands before the drag ends
     const d = drag.current;
     drag.current = null;
     setGuides({});
@@ -518,9 +548,9 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         width="100%"
         height="100%"
         onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
+        onPointerMove={e => movePointer({ clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, target: e.target })}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => setCursor(null)}
+        onPointerLeave={() => { movePointer.cancel(); setCursor(null); }}
         style={{ cursor: tool === 'select' ? (drag.current?.mode === 'pan' ? 'grabbing' : bg && !bg.locked && !readOnly ? 'move' : 'default') : 'crosshair', display: 'block' }}
       >
         <defs>
@@ -615,6 +645,23 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
             </g>
           );
         })}
+
+        {/* Vastu grid: the 3 x 3 zones along the compass, the centre, and north */}
+        {vastu && (
+          <g style={{ pointerEvents: 'none' }}>
+            {vastu.grid.lines.map(([a, b], i) => (
+              <line key={`vg-${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#7c3aed" strokeWidth={px(1.2)} strokeDasharray={`${px(6)} ${px(4)}`} opacity={0.55} />
+            ))}
+            {vastu.grid.labels.map(l => (
+              <text key={`vz-${l.zone}`} x={l.at.x} y={l.at.y} fontSize={fs * 1.6} fontWeight={800} fill="#7c3aed" opacity={0.18} textAnchor="middle" dominantBaseline="middle">
+                {l.zone === 'C' ? 'BRAHMA' : l.zone}
+              </text>
+            ))}
+            <circle cx={vastu.grid.centre.x} cy={vastu.grid.centre.y} r={px(5)} fill="#7c3aed" opacity={0.6}>
+              <title>{ZONE_NAMES.C}</title>
+            </circle>
+          </g>
+        )}
 
         {/* Room names */}
         {shownRooms.map(r => (
@@ -840,7 +887,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         </button>
       </div>
 
-      <Compass rotation={0} />
+      <Compass rotation={((plan.northDeg ?? 0) * Math.PI) / 180} />
 
       <div className="canvas-bottom-area-card">
         <div className="area-card-badge">
@@ -876,4 +923,4 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
       </div>
     </div>
   );
-}
+});
