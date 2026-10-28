@@ -58,6 +58,7 @@ export async function saveBuild(planId: 'p1' | 'p2', buildData: BuildData, token
       labels: arr(p.labels),
       items: arr(p.items),
       ...(bg ? { background: bg } : {}),
+      ...(Number.isFinite(Number(p.northDeg)) ? { northDeg: ((Number(p.northDeg) % 360) + 360) % 360 } : {}),
     },
   };
 

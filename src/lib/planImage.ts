@@ -5,7 +5,9 @@ import { fromWire, toPixelSpace, WIRE_JSON_SCHEMA, WireSchema, type Extraction }
 import { formatIssues } from '../plan/setPlan';
 import { EXTRACTION_VERSION, extractionPrompt } from './aiPrompt';
 import { ImageRead } from './db';
-import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
+import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, isOptionRejected, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
+import { firstJson } from './modelReply';
+import { aiRateLimit } from './rateLimit';
 
 // Step A of building from a drawing: the vision model gets the uploaded floor plan itself (at
 // the size it was uploaded, up to 2000 px, so the written sizes stay legible) and reads it into
@@ -14,8 +16,8 @@ import { aiClient, aiErrorMessage, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_
 // enforced by a JSON schema where supported. The answer is converted to pixels
 // (src/plan/extraction.ts). Step B, turning that into a plan in feet and lining it up with the
 // walls on the image, is done in code (src/plan/fromExtraction.ts, src/plan/wallMask.ts).
-// Each model in AI_MODELS is tried in turn (see aiClient.ts). Reads are cached per image and
-// prompt version; `force` reads again anyway.
+// The vision model (AI_VISION_MODEL, else AI_MODEL and its fallbacks) is used, each in turn
+// (see aiClient.ts). Reads are cached per image and prompt version; `force` reads again anyway.
 
 export type PlanImageResult =
   | { success: true; summary: string; rooms: ImageRoom[]; extraction: Extraction; imageWidth: number; imageHeight: number; model: string }
@@ -23,18 +25,7 @@ export type PlanImageResult =
   | { aborted: true };
 
 const MAX_RETRIES = 2;
-
-// The first {...} block in the reply, parsed.
-function extractJson(text: string): unknown {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  try {
-    return JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
+const MAX_IMAGE_CHARS = 8_000_000; // the browser sends at most ~2000 px JPEGs
 
 // Room boxes as fractions of the image, the older summary form the chat and the card use.
 const toImageRooms = (ex: Extraction, w: number, h: number): ImageRoom[] => ex.rooms.map(r => {
@@ -45,7 +36,7 @@ const toImageRooms = (ex: Extraction, w: number, h: number): ImageRoom[] => ex.r
 
 export async function readPlanImage(token: string, planId: string, image: string, w: number, h: number, signal?: AbortSignal, force = false): Promise<PlanImageResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
-  if (!/^data:image\/(png|jpeg|webp);base64,/.test(image)) return { error: 'Invalid image.' };
+  if (typeof image !== 'string' || image.length > MAX_IMAGE_CHARS || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image)) return { error: 'Invalid or too large image (PNG, JPEG or WebP).' };
   const user = await getUserByToken(token);
   if (!user) return { error: 'Your session has expired. Please log in again.' };
 
@@ -62,6 +53,8 @@ export async function readPlanImage(token: string, planId: string, image: string
     }
   }
 
+  const limited = aiRateLimit(user._id);
+  if (!limited.ok) return { error: limited.error };
   const result = await extract(image, width, height, info, signal);
   if ('success' in result) {
     const { summary, rooms, extraction, model } = result;
@@ -72,7 +65,7 @@ export async function readPlanImage(token: string, planId: string, image: string
 
 async function extract(image: string, width: number, height: number, info: ReturnType<typeof imageInfo>, signal?: AbortSignal): Promise<PlanImageResult> {
   try {
-    return (await withModels('read-plan', model => extractWith(model, image, width, height, info, signal), signal)).result;
+    return (await withModels('read-plan', model => extractWith(model, image, width, height, info, signal), signal, 'vision')).result;
   } catch (error: any) {
     if (signal?.aborted) return { aborted: true };
     console.error('[ai] read-plan error:', error?.status, error?.message);
@@ -112,7 +105,7 @@ async function extractWith(model: string, image: string, width: number, height: 
       try {
         return await request();
       } catch (error: any) {
-        if (error?.status !== 400 || signal?.aborted) throw error;
+        if (!isOptionRejected(error) || signal?.aborted) throw error;
         const message = String(error?.message ?? '');
         if (opts.reasoning !== 'off' && /think|reason/i.test(message)) {
           console.warn(`[ai] read-plan: ${model} doesn't take a reasoning setting; asking without it`);
@@ -151,7 +144,7 @@ async function extractWith(model: string, image: string, width: number, height: 
     }
     const choice = response.choices[0];
     const text = choice?.message.content ?? '';
-    const raw = extractJson(text);
+    const raw = firstJson(text);
     const parsed = raw ? WireSchema.safeParse(raw) : null;
     if (parsed?.success) {
       const extraction = fromWire(parsed.data, space, width, height);

@@ -14,6 +14,8 @@ import { DisplayUnit, formatArea, formatLength, fromDisplay, round2, toDisplay }
 import type { Selection, Tool } from './Editor2D';
 import { FurnitureSymbol } from './FurnitureSymbol';
 import { loadBackgroundImage } from './backgroundImage';
+import { VastuPanel } from './VastuPanel';
+import type { VastuReport } from '../plan/vastu';
 
 interface Props {
   plan: Plan;
@@ -30,8 +32,12 @@ interface Props {
   onSwitchPlan: (i: 0 | 1 | 2) => void;
   wallDims: { thickness: number; height: number };
   setWallDims: (d: { thickness: number; height: number }) => void;
-  activeNav?: 'plans' | 'rooms' | 'settings' | 'templates' | 'export';
-  setActiveNav?: (nav: 'plans' | 'rooms' | 'settings' | 'templates' | 'export') => void;
+  activeNav?: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export';
+  setActiveNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
+  onImportPlan?: (text: string) => Promise<{ message: string; notes: string[] }>;
+  vastu?: VastuReport | null;
+  onAskAI?: (text: string) => void;
+  onFixWithAI?: () => Promise<string[]>;
 }
 
 // Number input that commits on Enter/blur (one undo step per edit, no rounding fights while typing).
@@ -91,7 +97,7 @@ const DangerButton = ({ onClick, children }: { onClick: () => void; children: Re
 );
 
 export function Sidebar(props: Props) {
-  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans' } = props;
+  const { plan, rooms, unit, tool, setTool, selection, setSelection, onCommit, readOnly, activePlanIndex, onSwitchPlan, wallDims, setWallDims, activeNav = 'plans', onImportPlan, vastu, onAskAI, onFixWithAI } = props;
 
   return (
     <div className="sidebar-panel-container">
@@ -109,6 +115,10 @@ export function Sidebar(props: Props) {
             </div>
           </div>
           <BackgroundSection plan={plan} unit={unit} tool={tool} setTool={setTool} onCommit={onCommit} />
+        </div>
+      ) : activeNav === 'vastu' ? (
+        <div style={{ padding: 16 }}>
+          <VastuPanel plan={plan} rooms={rooms} report={vastu ?? null} onCommit={onCommit} readOnly={readOnly} onAskAI={onAskAI} onFixWithAI={onFixWithAI} />
         </div>
       ) : activeNav === 'templates' ? (
         <div style={{ padding: 16 }}>
@@ -133,6 +143,7 @@ export function Sidebar(props: Props) {
               <Upload size={14} /> Download Plan JSON
             </button>
           </div>
+          {onImportPlan && !readOnly && <ImportPlan onImport={onImportPlan} />}
         </div>
       ) : (
         <ProjectPanel
@@ -303,6 +314,34 @@ function ProjectPanel({ plan, rooms, unit, readOnly, activePlanIndex, onSwitchPl
         )}
       </div>
     </>
+  );
+}
+
+// Builds the plan from a JSON floor plan, pasted or from a file: one written by another AI
+// (rooms as polygons in feet, walls, doors, windows) or this app's own download. It replaces
+// the plan; Undo brings the old one back.
+function ImportPlan({ onImport }: { onImport: (text: string) => Promise<{ message: string; notes: string[] }> }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string[]>([]);
+  const run = async (json: string) => {
+    if (!json.trim()) return;
+    setBusy(true);
+    const { message, notes } = await onImport(json);
+    setResult([message, ...notes]);
+    setBusy(false);
+  };
+  return (
+    <div className="sidebar-section">
+      <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>Import Plan JSON</h3>
+      <p className="muted">Paste a floor plan as JSON (for example one written by an AI), or choose a .json file. It replaces the current plan; Undo brings it back.</p>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={6} placeholder='{"rooms": [{"name": "Kitchen", "type": "kitchen", "polygon": [[0, 0], [10, 0], [10, 8], [0, 8]]}], "doors": [], "windows": []}'
+        style={{ width: '100%', fontFamily: 'monospace', fontSize: 11, marginBottom: 8, boxSizing: 'border-box' }} />
+      <button className="primary-btn" style={{ marginBottom: 8 }} disabled={busy || !text.trim()} onClick={() => run(text)}>Build plan from JSON</button>
+      <input type="file" accept=".json,application/json,text/plain" disabled={busy}
+        onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) run(await f.text()); }} />
+      {result.map((line, i) => <p key={i} className={i === 0 ? 'muted' : 'notice'} style={{ marginTop: 8 }}>{line}</p>)}
+    </div>
   );
 }
 

@@ -52,12 +52,12 @@ export default function Signup() {
             
             <div className="input-group">
               <label>Create Password</label>
-              <input type="password" name="password" required placeholder="Create password" />
+              <input type="password" name="password" required minLength={8} maxLength={128} placeholder="Create password (8+ characters)" />
             </div>
 
             <div className="input-group">
               <label>Confirm Password</label>
-              <input type="password" name="confirmPassword" required placeholder="Confirm password" />
+              <input type="password" name="confirmPassword" required minLength={8} maxLength={128} placeholder="Confirm password" />
             </div>
           </div>
           

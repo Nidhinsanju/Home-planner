@@ -22,7 +22,10 @@ import { DrawingPixels, DrawingWalls } from './wallMask';
 // no wall becomes a divider (open), whatever the model said, while exterior sides stay walls.
 
 const EDGE_TOL = 1; // feet; box edges closer than this are the same wall line
-const LABEL_WEIGHT = 50; // how much more a written size counts than a box position
+// Written sizes are the ground truth: they outweigh any box position by far, so labelled rooms
+// come out at exactly their written size (within EXACT).
+const LABEL_WEIGHT = 1e5;
+const EXACT = 1 / 48; // feet (1/4 in); a labelled room further off than this gets its own line
 const FOUND_WEIGHT = 200; // a box edge on a wall found in the image (counts more than a label)
 const OPEN_WEIGHT = 0.05; // a box edge with no wall drawn there (only the model's guess)
 const MAX_RATIO_SKEW = Math.log(1.25); // width and depth scales must agree within 25%
@@ -67,7 +70,7 @@ function orientation(r: ExtractedRoom): { scale: number; across: number; down: n
 
 // Least squares on one axis. Each observation pulls a line to a position; each labelled room
 // pulls the distance between two lines to its size.
-function solveAxis(lineCount: number, obs: { line: number; at: number; weight: number }[], spans: { a: number; b: number; length: number }[]) {
+export function solveAxis(lineCount: number, obs: { line: number; at: number; weight: number }[], spans: { a: number; b: number; length: number }[]) {
   const n = lineCount;
   const A = Array.from({ length: n }, () => new Array(n + 1).fill(0));
   for (const o of obs) {
@@ -269,10 +272,11 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
     const weight = (k: number) => (!faces || k >= base ? 1 : faces[k >> 1][size === 'across' ? 'x' : 'y'][k & 1] ? FOUND_WEIGHT : OPEN_WEIGHT);
     const solve = () => solveAxis(lineCount, values.map((at, k) => ({ line: line[k], at, weight: weight(k) })), spans.map(s => ({ a: line[2 * s.room], b: line[2 * s.room + 1], length: s.length })));
     let pos = solve();
-    // Rooms still more than 6 in off their written size (loose boxes pulling shared wall lines
-    // different ways) get their own line and the axis is solved again.
-    for (let round = 0; round < 3; round++) {
-      const off = spans.filter(s => Math.abs(pos[line[2 * s.room + 1]] - pos[line[2 * s.room]] - s.length) > 0.5);
+    // Rooms still off their written size (two written sizes pulling a shared wall line different
+    // ways) get their own line and the axis is solved again.
+    const offBy = (s: (typeof spans)[number]) => Math.abs(pos[line[2 * s.room + 1]] - pos[line[2 * s.room]] - s.length);
+    for (let round = 0; round < 6; round++) {
+      const off = spans.filter(s => offBy(s) > EXACT);
       if (off.length === 0) break;
       const before = lineCount;
       off.forEach(s => free(s.room));
@@ -280,15 +284,18 @@ export function layoutFromExtraction(ex: Extraction, image: { width: number; hei
       pos = solve();
     }
     // Lines closer than a wall's thickness are one wall seen from both sides (a wall drawn
-    // thicker than ours, or written sizes that disagree by an inch or two): they become one,
-    // so no second wall is built right beside the first.
+    // thicker than ours): they become one, so no second wall is built right beside the first,
+    // unless that would take a room off its written size.
     const order = pos.map((p, k) => k).sort((a, b) => pos[a] - pos[b]);
     for (let g = 0; g < order.length;) {
       let e = g + 1;
       while (e < order.length && pos[order[e]] - pos[order[e - 1]] < thickness + 0.1) e++;
       if (e - g > 1) {
-        const mean = order.slice(g, e).reduce((t, k) => t + pos[k], 0) / (e - g);
-        for (const k of order.slice(g, e)) pos[k] = mean;
+        const group = order.slice(g, e);
+        const mean = group.reduce((t, k) => t + pos[k], 0) / group.length;
+        const before = group.map(k => pos[k]);
+        group.forEach(k => { pos[k] = mean; });
+        if (spans.some(sp => offBy(sp) > EXACT)) group.forEach((k, n) => { pos[k] = before[n]; });
       }
       g = e;
     }
@@ -627,7 +634,7 @@ function edgesInside(A: Vec[], B: Vec[]): [Vec, Vec][] {
 }
 
 // Stretches where an edge of polygon A lies on an edge of polygon B (same line, overlapping).
-function sharedEdges(A: Vec[], B: Vec[]): [Vec, Vec][] {
+export function sharedEdges(A: Vec[], B: Vec[]): [Vec, Vec][] {
   const out: [Vec, Vec][] = [];
   const edges = (P: Vec[]) => P.map((p, i) => [p, P[(i + 1) % P.length]] as [Vec, Vec]);
   for (const [a1, a2] of edges(A)) {

@@ -4,7 +4,7 @@ import { addOpening, addWall, newId, wallEnds } from './ops';
 import { detectRooms } from './rooms';
 import { closestOnSegment, dist, interiorPoint, pointInPolygon, signedArea } from './geometry';
 
-// A whole plan in absolute coordinates (feet; x east, y south), as the AI's set_plan tool or
+// A whole plan in absolute coordinates (feet; x east, y south), as the AI's setPlan answer or
 // the drawing reader (fromExtraction.ts) produces it. Rooms are polygons, so diagonal walls
 // work. Each room's edges become walls; `walls` adds extra ones (room dividers, partitions)
 // that doors and windows can refer to by id. Neighbouring rooms share walls automatically.

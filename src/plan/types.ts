@@ -86,6 +86,9 @@ export interface Plan {
   labels: RoomLabel[];
   items: Item[];
   background?: Background;
+  // Where true north is: degrees clockwise from "up" on the plan (0 = up). Used by the Vastu
+  // analysis; unset means north is up.
+  northDeg?: number;
 }
 
 export const WALL_DEFAULTS = { thickness: 0.5, height: 9 };

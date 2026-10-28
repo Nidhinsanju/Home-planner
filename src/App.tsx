@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -14,10 +14,12 @@ import { Background, emptyPlan, Plan, WALL_DEFAULTS } from './plan/types';
 import { detectRooms, detectSpaces, roomAt } from './plan/rooms';
 import * as ops from './plan/ops';
 import { examplePlan, planFromBuild } from './plan/migrate';
-import { applyCommands, BuildCommand, describePlan } from './plan/commands';
+import { applyCommands, BuildCommand, describeCommand, describePlan } from './plan/commands';
 import { applySetPlan, describeCounts, type SetPlanPayload } from './plan/setPlan';
 import { buildFromDrawing, describeLayout } from './plan/buildDrawing';
 import { loadDrawingMask } from './editor/backgroundImage';
+import { importPlanJson } from './plan/importPlan';
+import { analyzeVastu, vastuReport } from './plan/vastu';
 import { describeChange } from './plan/summary';
 import type { AiChange } from './UI';
 import { DisplayUnit } from './units';
@@ -84,7 +86,7 @@ function App({ initialUser }: any) {
   const [wallDims, setWallDims] = useState({ ...WALL_DEFAULTS });
   const [cutaway, setCutaway] = useState(true);
   const [rotation, setRotation] = useState(0);
-  const [activeNav, setActiveNav] = useState<'plans' | 'rooms' | 'settings' | 'templates' | 'export'>('plans');
+  const [activeNav, setActiveNav] = useState<'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export'>('plans');
   const [panState, setPanState] = useState({ up: false, down: false, left: false, right: false });
   const [, forceRender] = useState(0);
 
@@ -174,6 +176,80 @@ function App({ initialUser }: any) {
 
   const sceneData = useMemo(() => describePlan(plan), [plan]);
 
+  // Bumped when the whole plan is replaced (imported, redrawn by the AI, built from the
+  // drawing), so the 2D and 3D views frame the new plan instead of looking at empty space.
+  const [fitKey, setFitKey] = useState(0);
+
+  // The Vastu report (with its one-click fixes) while the Vastu tab is open. Worked out from a
+  // deferred copy of the plan, so dragging walls stays smooth.
+  const deferredPlan = useDeferredValue(plan);
+  const vastu = useMemo(() => (activeNav === 'vastu' ? vastuReport(deferredPlan) : null), [activeNav, deferredPlan]);
+  // A message for the chat sent from elsewhere (the Vastu tab's Explain with AI).
+  const [queuedPrompt, setQueuedPrompt] = useState<{ id: number; text: string }>();
+  const askAI = (text: string) => setQueuedPrompt(q => ({ id: (q?.id ?? 0) + 1, text }));
+  // "Fix with AI": the AI's changes come back already checked on the server (the score goes up,
+  // no room is lost); they are checked again here on the live plan, applied as one undo step,
+  // and described in the Vastu tab and the chat.
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  const [chatNote, setChatNote] = useState<{ id: number; lines: string[] }>();
+  const handleVastuFix = async (): Promise<string[]> => {
+    if (readOnly) return ['The example plan is read-only. Switch to P1 or P2.'];
+    const start = plan;
+    const before = analyzeVastu(start);
+    if (!before) return ['There are no rooms to check yet.'];
+    const { background: _image, ...withoutImage } = start; // the image isn't needed and is large
+    let res: any;
+    try {
+      const response = await fetch('/api/vastu-fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+        body: JSON.stringify({ planId: activePlanIndex === 0 ? 'p1' : 'p2', plan: withoutImage }),
+      });
+      res = await response.json();
+    } catch {
+      return ['Could not reach the AI. Check your connection and try again.'];
+    }
+    if (res?.error) return [res.error];
+    if (!res?.success) return ['The AI did not answer. Try again.'];
+    if (!res.changes.length) return [res.summary || 'The AI found no practical change that improves the Vastu score.'];
+    if (planRef.current !== start) return ['The plan changed while the AI was working, so nothing was applied. Press Fix with AI again.'];
+    const { plan: next, errors } = applyCommands(start, res.changes.map((c: any) => c.command));
+    const after = analyzeVastu(next)?.score ?? 0;
+    if (after <= before.score) return [`The AI's changes would not raise the score here (${before.score} → ${after}), so nothing was applied.`];
+    const notes = await commitAndSave(next);
+    const lines = [
+      `Vastu score ${before.score} → ${after}. ${res.summary}`.trim(),
+      ...res.changes.map((c: any) => `• ${describeCommand(start, c.command)}: ${c.why}`),
+      ...(Array.isArray(res.warnings) ? res.warnings : []),
+      'Undo brings back the previous plan.',
+      ...errors, ...notes,
+    ];
+    setChatNote(n => ({ id: (n?.id ?? 0) + 1, lines }));
+    return lines;
+  };
+
+  // After a whole plan is built: its Vastu score in the chat, and the Vastu tab opened.
+  const vastuHook = (built: Plan) => {
+    const r = analyzeVastu(built);
+    if (!r) return '';
+    setActiveNav('vastu');
+    const todo = r.checks.filter(c => c.status === 'bad' || c.status === 'fair').length;
+    return ` Vastu score: ${r.score}/100${todo ? `, with ${todo} thing${todo === 1 ? '' : 's'} to improve` : ''}. The Vastu tab shows why, and how to fix it (set where North is on your plan first).`;
+  };
+  const refit = () => setFitKey(k => k + 1);
+
+  // A floor plan given as JSON (pasted in the chat or the Export tab) replaces the plan, as
+  // one undo step. Anything in it that can't be used is listed in the notes.
+  const handleImportPlan = async (text: string): Promise<{ message: string; notes: string[] }> => {
+    if (readOnly) return { message: 'The example plan is read-only. Switch to P1 or P2 to import a plan.', notes: [] };
+    const res = importPlanJson(plan, text);
+    if ('error' in res) return { message: res.error, notes: [] };
+    const notes = await commitAndSave(res.plan);
+    refit();
+    return { message: `${res.message} Undo brings back the previous plan.${vastuHook(res.plan)}`, notes: [...res.notes, ...notes] };
+  };
+
   // Decode the uploaded drawing's pixels in the background, so building from it can follow
   // the walls drawn on it. Builds wait for it (ensureDrawingMask) in case it isn't ready yet.
   const backgroundSrc = plan.background?.src;
@@ -193,12 +269,13 @@ function App({ initialUser }: any) {
     return { changed, summary: text, notes: errors };
   };
 
-  // Replaces the plan with one from the AI's set_plan tool, as one undo step.
+  // Replaces the plan with a whole new one from the AI (its setPlan answer), as one undo step.
   const handleSetPlan = async (payload: SetPlanPayload): Promise<AiChange> => {
     if (readOnly) return { changed: false, summary: '', notes: ['The example plan is read-only.'] };
     const res = applySetPlan(plan, payload, { replace: true });
     const { changed } = describeChange(plan, res.plan);
     const notes = changed ? await commitAndSave(res.plan) : [];
+    if (changed) refit();
     return { changed, summary: changed ? `Replaced the plan: ${describeCounts(res.applied)}.` : 'Nothing on the plan changed.', notes: [...res.errors, ...notes] };
   };
 
@@ -212,10 +289,38 @@ function App({ initialUser }: any) {
   };
 
   // The vision model finished reading the background image. Ignored if the image was
-  // replaced or removed meanwhile.
+  // replaced or removed meanwhile. Image first: a plan with no rooms yet is built from the
+  // drawing straight away (one undo step), and everything after that is an edit of it. A plan
+  // that already has rooms keeps them until the user chooses to build (the card asks).
   const handleImageRead = async (src: string, analysis: NonNullable<Background['analysis']>) => {
     if (readOnly || plan.background?.src !== src) return [];
-    return commitAndSave(ops.updateBackground(plan, { analysis, use: undefined }));
+    const read = ops.updateBackground(plan, { analysis, use: undefined });
+    if (detectRooms(plan).length === 0 && analysis.extraction) {
+      const built = await buildDrawing(read);
+      if (built.plan) {
+        const notes = await commitAndSave(built.plan);
+        refit();
+        return [built.message + vastuHook(built.plan), ...built.notes, ...notes];
+      }
+    }
+    return commitAndSave(read);
+  };
+
+  // The plan built from the drawing (marked as built from it), or why it can't be built.
+  const buildDrawing = async (base: Plan): Promise<{ plan?: Plan; message: string; notes: string[] }> => {
+    await ensureDrawingMask();
+    const built = buildFromDrawing(base);
+    if (built && 'error' in built) return { message: built.error, notes: [] };
+    if (built) {
+      return {
+        plan: ops.updateBackground(built.plan, { use: 'build' }),
+        message: `Built ${describeCounts(built.result.applied)} from your drawing, at the sizes written on it. ${describeLayout(built.layout)} Now ask me for any changes, or drag walls to fine-tune.`,
+        notes: built.result.errors,
+      };
+    }
+    // Read by the older reader (room boxes only): building from that would put walls in the
+    // wrong places, so nothing is built.
+    return { message: 'This drawing was read by an older reader that doesn\'t give room sizes or positions precisely enough to build from. Press Re-read on the image card, then Build it for me.', notes: [] };
   };
 
   // The user chose what to do with the image: build its rooms, or keep it as reference.
@@ -225,16 +330,11 @@ function App({ initialUser }: any) {
     if (use === 'context') {
       return { message: 'OK, I\'ll keep your drawing as reference. You can ask things like "build the kitchen from the drawing" or "what rooms are on it?".', notes: await commitAndSave(ops.updateBackground(plan, { use })) };
     }
-    await ensureDrawingMask();
-    const built = buildFromDrawing(plan);
-    if (built && 'error' in built) return { message: built.error, notes: [] };
-    if (built) {
-      const notes = await commitAndSave(ops.updateBackground(built.plan, { use }));
-      return { message: `Built ${describeCounts(built.result.applied)} from your drawing. ${describeLayout(built.layout)} Drag walls to fine-tune, or ask me for changes.`, notes: [...built.result.errors, ...notes] };
-    }
-    // Read by the older reader (room boxes only): building from that would put walls in the
-    // wrong places, so nothing is built.
-    return { message: 'This drawing was read by an older reader that doesn\'t give room sizes or positions precisely enough to build from. Press Re-read on the image card, then Build it for me.', notes: [] };
+    const built = await buildDrawing(plan);
+    if (!built.plan) return { message: built.message, notes: built.notes };
+    const notes = await commitAndSave(built.plan);
+    refit();
+    return { message: built.message + vastuHook(built.plan), notes: [...built.notes, ...notes] };
   };
 
   return (
@@ -262,6 +362,8 @@ function App({ initialUser }: any) {
             activePlanIndex={activePlanIndex} onSwitchPlan={handleSwitchPlan}
             wallDims={wallDims} setWallDims={setWallDims}
             activeNav={activeNav} setActiveNav={setActiveNav}
+            onImportPlan={handleImportPlan}
+            vastu={vastu} onAskAI={askAI} onFixWithAI={handleVastuFix}
           />
 
           <div className="canvas-container">
@@ -271,7 +373,7 @@ function App({ initialUser }: any) {
                 plan={plan} spaces={spaces} unit={unit}
                 tool={tool} setTool={setTool}
                 selection={selection} setSelection={setSelection}
-                onCommit={commit} readOnly={readOnly} wallDims={wallDims}
+                onCommit={commit} readOnly={readOnly} wallDims={wallDims} fitKey={fitKey} vastu={vastu}
               />
             ) : (
               <>
@@ -279,7 +381,7 @@ function App({ initialUser }: any) {
                 <Compass rotation={rotation} />
                 <DPad onPan={(dir, active) => setPanState(prev => ({ ...prev, [dir]: active }))} />
                 <Canvas shadows camera={{ position: [46, 37, 46], fov: 42, near: 1, far: 3000 }}>
-                  <CameraController key={activePlanIndex} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
+                  <CameraController key={`${activePlanIndex}-${fitKey}`} plan={plan} panState={panState} onRotationChange={setRotation} isInteracting={false} />
                   <View3D plan={plan} rooms={rooms} unit={unit} selection={selection} onSelect={setSelection} cutaway={cutaway} />
                 </Canvas>
               </>
@@ -295,6 +397,9 @@ function App({ initialUser }: any) {
             onImageChoice={handleImageChoice}
             onSwitchView={setView}
             setTool={setTool}
+            onImportPlan={handleImportPlan}
+            queuedPrompt={queuedPrompt}
+            chatNote={chatNote}
           />
         </div>
       </div>

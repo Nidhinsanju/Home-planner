@@ -8,6 +8,7 @@ import * as ops from '../plan/ops';
 import { add, closestOnSegment, dist, dot, sub } from '../plan/geometry';
 import { DisplayUnit, formatArea, formatLength, fromDisplay, snapStep } from '../units';
 import { Compass } from '../UI';
+import { ZONE_NAMES, type VastuReport } from '../plan/vastu';
 import {
   MousePointer2, Square, DoorOpen, AppWindow, Box, Type,
   MoveHorizontal, Trash2, Maximize2, Crosshair, Layers, Lightbulb
@@ -28,6 +29,8 @@ interface Props {
   onCommit: (next: Plan) => void;
   readOnly: boolean;
   wallDims: { thickness: number; height: number };
+  fitKey?: number; // changes when the whole plan was replaced: frame it again
+  vastu?: VastuReport | null; // drawn as the Vastu grid over the plan (while the Vastu tab is open)
 }
 
 type Drag =
@@ -62,7 +65,7 @@ const HINTS: Record<string, string> = {
   calibrate: 'Set scale: click both ends of something on the image whose real length you know (e.g. a wall), then type that length.',
 };
 
-export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims }: Props) {
+export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSelection, onCommit, readOnly, wallDims, fitKey, vastu }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -117,14 +120,18 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
     setView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, scale: Math.max(3, Math.min(60, scale)) });
   }, [plan, size]);
 
-  // Fit once the container has its real size.
+  // Fit once the container has its real size, and again whenever the whole plan is replaced.
   const fitted = useRef(false);
+  const lastFitKey = useRef(fitKey);
   useEffect(() => {
     if (!fitted.current && size.w !== 800) {
       fitted.current = true;
       fitView();
+    } else if (fitKey !== lastFitKey.current) {
+      fitView();
     }
-  }, [size, fitView]);
+    lastFitKey.current = fitKey;
+  }, [size, fitView, fitKey]);
 
   const toWorld = (clientX: number, clientY: number): Vec => {
     const svg = svgRef.current;
@@ -616,6 +623,23 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
           );
         })}
 
+        {/* Vastu grid: the 3 x 3 zones along the compass, the centre, and north */}
+        {vastu && (
+          <g style={{ pointerEvents: 'none' }}>
+            {vastu.grid.lines.map(([a, b], i) => (
+              <line key={`vg-${i}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#7c3aed" strokeWidth={px(1.2)} strokeDasharray={`${px(6)} ${px(4)}`} opacity={0.55} />
+            ))}
+            {vastu.grid.labels.map(l => (
+              <text key={`vz-${l.zone}`} x={l.at.x} y={l.at.y} fontSize={fs * 1.6} fontWeight={800} fill="#7c3aed" opacity={0.18} textAnchor="middle" dominantBaseline="middle">
+                {l.zone === 'C' ? 'BRAHMA' : l.zone}
+              </text>
+            ))}
+            <circle cx={vastu.grid.centre.x} cy={vastu.grid.centre.y} r={px(5)} fill="#7c3aed" opacity={0.6}>
+              <title>{ZONE_NAMES.C}</title>
+            </circle>
+          </g>
+        )}
+
         {/* Room names */}
         {shownRooms.map(r => (
           <g key={`label-${r.key}`} style={{ pointerEvents: 'none', userSelect: 'none' }}>
@@ -840,7 +864,7 @@ export function Editor2D({ plan, spaces, unit, tool, setTool, selection, setSele
         </button>
       </div>
 
-      <Compass rotation={0} />
+      <Compass rotation={((plan.northDeg ?? 0) * Math.PI) / 180} />
 
       <div className="canvas-bottom-area-card">
         <div className="area-card-badge">

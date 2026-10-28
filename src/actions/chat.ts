@@ -16,7 +16,7 @@ export async function getChatHistory(token: string, planId: string) {
       content: msg.content
     }));
     return { messages };
-  } catch (err) {
+  } catch {
     return { messages: [] };
   }
 }
@@ -31,7 +31,7 @@ export async function clearChatHistory(token: string, planId: string) {
     await connectToDatabase();
     await ChatHistory.updateOne({ userId: user._id, planId }, { $set: { messages: [] } });
     return { success: true };
-  } catch (err) {
+  } catch {
     return { success: false, error: 'Failed to clear chat' };
   }
 }

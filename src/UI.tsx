@@ -2,19 +2,20 @@ import React, { useState } from 'react';
 import {
   Undo2, Redo2, Layers, Box, Bookmark, Trash2, ChevronDown, LogOut,
   Home, LayoutGrid, Boxes, Settings, LayoutTemplate, Upload, Sun,
-  Sparkles, Send, Armchair, Ruler, Car
+  Sparkles, Send, Armchair, Ruler, Car, Compass as CompassIcon
 } from 'lucide-react';
 import { getChatHistory, clearChatHistory, saveChatTurn } from './actions/chat';
 import type { Background } from './plan/types';
 import type { SetPlanPayload } from './plan/setPlan';
 import { PlanImageCard } from './editor/PlanImageCard';
+import { looksLikePlan, parseJsonText } from './plan/importPlan';
 
 export const NavRail = ({
   activeNav = 'plans',
   onSelectNav,
 }: {
-  activeNav?: 'plans' | 'rooms' | 'settings' | 'templates' | 'export';
-  onSelectNav?: (nav: 'plans' | 'rooms' | 'settings' | 'templates' | 'export') => void;
+  activeNav?: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export';
+  onSelectNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
 }) => {
   return (
     <aside className="nav-rail">
@@ -49,6 +50,17 @@ export const NavRail = ({
             <Boxes size={20} />
           </div>
           <span className="nav-item-label">Rooms</span>
+        </button>
+
+        <button
+          className={`nav-item-btn ${activeNav === 'vastu' ? 'active' : ''}`}
+          onClick={() => onSelectNav?.('vastu')}
+          title="Vastu report"
+        >
+          <div className="nav-item-icon-box">
+            <CompassIcon size={20} />
+          </div>
+          <span className="nav-item-label">Vastu</span>
         </button>
 
         <button
@@ -272,7 +284,15 @@ export const ChatSidebar = ({
   onImageChoice,
   onSwitchView,
   setTool,
+  onImportPlan,
+  queuedPrompt,
+  chatNote,
 }: {
+  onImportPlan?: (text: string) => Promise<{ message: string; notes: string[] }>;
+  // A message sent on the user's behalf from elsewhere in the app (e.g. "Explain with AI").
+  queuedPrompt?: { id: number; text: string };
+  // Lines posted to the chat by the app (e.g. what Fix with AI changed), once each.
+  chatNote?: { id: number; lines: string[] };
   onBuildCommands?: (cmds: any[]) => Promise<AiChange>;
   onSetPlan?: (payload: SetPlanPayload) => Promise<AiChange>;
   activePlanIndex: number;
@@ -388,8 +408,33 @@ export const ChatSidebar = ({
     const userMsg = input.trim();
     setMessages(prev => [...prev, { text: userMsg, isAi: false, time: getNowTime() }]);
     setInput('');
+    // A floor plan pasted as JSON (e.g. written by another AI) is built straight away.
+    const raw = onImportPlan && userMsg.includes('{') ? parseJsonText(userMsg) : null;
+    if (raw && looksLikePlan(raw)) {
+      setIsLoading(true);
+      onImportPlan!(userMsg)
+        .then(({ message, notes }) => [message, ...notes].filter(Boolean).forEach(say))
+        .finally(() => setIsLoading(false));
+      return;
+    }
     run(userMsg);
   };
+
+  const lastNote = React.useRef(chatNote?.id);
+  React.useEffect(() => {
+    if (!chatNote || chatNote.id === lastNote.current) return;
+    lastNote.current = chatNote.id;
+    setMessages(prev => [...prev, ...chatNote.lines.map(text => ({ text, isAi: true, time: getNowTime() }))]);
+  }, [chatNote]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prompts queued from elsewhere are sent as if typed (once each).
+  const lastQueued = React.useRef(queuedPrompt?.id);
+  React.useEffect(() => {
+    if (!queuedPrompt || queuedPrompt.id === lastQueued.current || isLoading) return;
+    lastQueued.current = queuedPrompt.id;
+    setMessages(prev => [...prev, { text: queuedPrompt.text, isAi: false, time: getNowTime() }]);
+    run(queuedPrompt.text);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (prompt: string) => {
     const planId = activePlanIndex === 0 ? 'p1' : activePlanIndex === 1 ? 'p2' : 'example';
