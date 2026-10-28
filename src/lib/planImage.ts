@@ -8,6 +8,7 @@ import { ImageRead } from './db';
 import { aiClient, aiErrorResult, coordinateSpace, EXTRACT_MAX_TOKENS, EXTRACT_REASONING, imageInfo, isOptionRejected, logAiCall, markNoJsonSchema, markNoReasoning, reasoningField, supportsJsonSchema, supportsReasoning, TryNextModel, withModels } from './aiClient';
 import { firstJson } from './modelReply';
 import { aiRateLimit } from './rateLimit';
+import { AiCharge, isAdmin, type ClientRef } from './aiQuota';
 
 // Step A of building from a drawing: the vision model gets the uploaded floor plan itself (at
 // the size it was uploaded, up to 2000 px, so the written sizes stay legible) and reads it into
@@ -21,7 +22,7 @@ import { aiRateLimit } from './rateLimit';
 
 export type PlanImageResult =
   | { success: true; summary: string; rooms: ImageRoom[]; extraction: Extraction; imageWidth: number; imageHeight: number; model: string }
-  | { error: string; busy?: true }
+  | { error: string; busy?: true; limit?: true }
   | { aborted: true };
 
 const MAX_RETRIES = 2;
@@ -34,7 +35,7 @@ const toImageRooms = (ex: Extraction, w: number, h: number): ImageRoom[] => ex.r
   return { name: r.name, type: r.type, box: [c(Math.min(x1, x2), w), c(Math.min(y1, y2), h), c(Math.max(x1, x2), w), c(Math.max(y1, y2), h)] };
 });
 
-export async function readPlanImage(token: string, planId: string, image: string, w: number, h: number, signal?: AbortSignal, force = false): Promise<PlanImageResult> {
+export async function readPlanImage(token: string, planId: string, image: string, w: number, h: number, signal?: AbortSignal, force = false, client: ClientRef = { fingerprint: '' }): Promise<PlanImageResult> {
   if (!isPlanId(planId)) return { error: 'The AI assistant is only available on your own plans.' };
   if (typeof image !== 'string' || image.length > MAX_IMAGE_CHARS || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image)) return { error: 'Invalid or too large image (PNG, JPEG or WebP).' };
   const user = await getUserByToken(token);
@@ -53,9 +54,15 @@ export async function readPlanImage(token: string, planId: string, image: string
     }
   }
 
-  const limited = aiRateLimit(user._id);
+  const limited = aiRateLimit(user._id, isAdmin(user));
   if (!limited.ok) return { error: limited.error };
+  // A new reading uses one of the user's AI prompts (a cached one above is free), given back
+  // if the AI didn't answer.
+  const charge = new AiCharge(client);
+  const paid = await charge.take(user);
+  if (!paid.ok) return { error: paid.error, limit: true };
   const result = await extract(image, width, height, info, signal);
+  if (!('success' in result)) await charge.refund();
   if ('success' in result) {
     const { summary, rooms, extraction, model } = result;
     await ImageRead.updateOne({ userId: user._id, hash }, { $set: { model, summary, rooms, extraction, imageWidth: width, imageHeight: height } }, { upsert: true }).catch(() => {});

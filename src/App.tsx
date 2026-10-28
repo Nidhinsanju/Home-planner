@@ -26,6 +26,8 @@ import { DisplayUnit } from './units';
 import { useThrottledCallback } from './hooks/timing';
 import { readAiResponse } from './lib/aiStreamClient';
 import { toast, Toaster } from './Toasts';
+import { aiHeaders } from './lib/deviceHints';
+import { renewSession } from './actions/auth';
 import './index.css';
 
 // Frames the plan on first render, then handles D-pad panning and compass rotation.
@@ -193,6 +195,25 @@ function App({ initialUser }: any) {
     return () => window.removeEventListener('beforeunload', onUnload);
   }, [p1, p2]);
 
+  // Sessions last 30 minutes and are renewed while the user works: at most every 5 minutes,
+  // on a click or key press. An idle session ends; the user is told before their next save fails.
+  const renew = useThrottledCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const res = await renewSession(token).catch(() => null);
+    if (res && 'token' in res && res.token) localStorage.setItem('token', res.token);
+    else if (res && 'error' in res && /expired/i.test(res.error ?? '')) toast('Your session has expired. Log in again to save your changes.', 'error');
+  }, 5 * 60_000);
+  useEffect(() => {
+    const onActivity = () => { renew(); };
+    window.addEventListener('pointerdown', onActivity);
+    window.addEventListener('keydown', onActivity);
+    return () => {
+      window.removeEventListener('pointerdown', onActivity);
+      window.removeEventListener('keydown', onActivity);
+    };
+  }, [renew]);
+
   const sceneData = useMemo(() => describePlan(plan), [plan]);
 
   // Bumped when the whole plan is replaced (imported, redrawn by the AI, built from the
@@ -228,7 +249,7 @@ function App({ initialUser }: any) {
     try {
       const response = await fetch('/api/vastu-fix', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+        headers: aiHeaders(localStorage.getItem('token') || ''),
         body: JSON.stringify({ planId: activePlanIndex === 0 ? 'p1' : 'p2', plan: withoutImage }),
       });
       res = await readAiResponse(response, st => toast(st.message, st.level));

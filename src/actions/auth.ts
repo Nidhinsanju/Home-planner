@@ -7,6 +7,7 @@ import { connectToDatabase, User, Build, UserDevice } from '../lib/db';
 import { getUserByToken, signToken } from '../lib/session';
 import { clientAddressOf, rateLimit, requestRateLimit, resetRateLimit } from '../lib/rateLimit';
 import { devicePrint } from '../lib/devicePrint';
+import { clientRefOf, isAdminEmail, mayCreateAccount, recordNewAccount } from '../lib/aiQuota';
 
 // Sign-up and login. Inputs are validated, emails are stored lower-case, passwords are hashed
 // with bcrypt (cost 12), and attempts are rate-limited per email and per network address, so
@@ -68,6 +69,8 @@ export async function login(formData: FormData) {
   if (!user || !isMatch) return { error: 'Invalid email or password' };
 
   resetRateLimit(`login:${email}`);
+  // Accounts listed in ADMIN_EMAILS become admins (no AI prompt limit).
+  if (isAdminEmail(user.email) && user.role !== 'admin') await User.updateOne({ _id: user._id }, { $set: { role: 'admin' } });
   await recordDevice(user, hintsField(formData));
   return { success: true, token: signToken(user.email) };
 }
@@ -78,20 +81,28 @@ export async function signup(formData: FormData) {
   const { email, password, name } = parsed.data;
   const limited = rateLimit(`signup-ip:${await clientAddress()}`, 5, 60 * MINUTE);
   if (!limited.ok) return { error: 'Too many sign-ups from this network. Try again later.' };
+  // One device can't make new accounts to get more AI prompts (see aiQuota.ts).
+  const hints = hintsField(formData);
+  const client = clientRefOf(await headers(), hints?.deviceId);
+  if (client.deviceId && !rateLimit(`signup-device:${client.deviceId}`, 3, 60 * MINUTE).ok) return { error: 'Too many sign-ups from this device. Try again later.' };
+  await connectToDatabase();
+  const allowed = await mayCreateAccount(client);
+  if (!allowed.ok) return { error: allowed.error };
 
   await connectToDatabase();
   const existingUser = await User.findOne({ email });
   if (existingUser) return { error: 'Email already exists' };
 
   const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
-  const newUser = await User.create({ email, passwordHash, name });
+  const newUser = await User.create({ email, passwordHash, name, role: isAdminEmail(email) ? 'admin' : 'user' });
+  await recordNewAccount(client);
 
   const emptyData = { rooms: [], walls: [], surfaces: [], doors: [], windows: [], assets: [] };
   await Build.insertMany([
     { userId: newUser._id, planId: 'p1', data: emptyData },
     { userId: newUser._id, planId: 'p2', data: emptyData },
   ]);
-  await recordDevice(newUser, hintsField(formData));
+  await recordDevice(newUser, hints);
 
   return { success: true, token: signToken(email) };
 }
@@ -118,4 +129,13 @@ export async function getUserFromToken(token: string, deviceHints?: unknown) {
   } catch {
     return null;
   }
+}
+
+// A fresh 30-minute token for a signed-in user, so active users are never logged out (the app
+// calls this while the user works). An expired or invalid token gets an error instead.
+export async function renewSession(token: string) {
+  if (!requestRateLimit('session', await clientAddress()).ok) return { error: 'Too many requests.' };
+  const user = await getUserByToken(token);
+  if (!user) return { error: 'Your session has expired. Please log in again.' };
+  return { token: signToken(user.email) };
 }

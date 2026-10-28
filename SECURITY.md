@@ -11,11 +11,62 @@
 - Accounts: email + password. Passwords are hashed with bcrypt (cost 12) and never sent to the browser.
 - Sign-up checks the email format, stores it lower-case, requires 8–128 character passwords, and cleans the name.
 - Login gives the same answer, after the same amount of work, for an unknown email and a wrong password, so it doesn't reveal who has an account.
-- Brute-force protection: at most 5 login attempts per email and 30 per network address per 15 minutes; 5 sign-ups per network address per hour.
-- Sessions are JWTs signed with `SUPER_KEY` (HS256 only, fixed issuer, 7 days). There is no fallback secret, and a key shorter than 32 characters is refused.
+- Brute-force protection: at most 5 login attempts per email and 30 per network address per 15 minutes; 5 sign-ups per network address and 3 per device per hour.
+- Sessions are JWTs signed with `SUPER_KEY` (HS256 only, fixed issuer) that expire after **30 minutes**. While the user works (a click or key press), the app asks for a fresh token at most every 5 minutes (`renewSession`), so active users stay signed in and an idle session ends after 30 minutes. There is no fallback secret, and a key shorter than 32 characters is refused.
 - Every server action and API route checks the token, and users can only read and change their own plans.
 
 The token is kept in the browser's `localStorage` and sent as a `Bearer` header. A further hardening step would be an `httpOnly` cookie, which scripts can't read.
+
+## Device print
+
+Each user has one record in the **`user_devices`** collection, kept separate from the accounts (`users`). It never holds a password. It is updated at every sign-up, login and app open (`src/lib/devicePrint.ts`, `src/lib/deviceHints.ts`).
+
+| Field | What it is | Where it comes from |
+|---|---|---|
+| `name`, `email` | Who the user is | Their account |
+| `deviceId` | A random id for this browser (a UUID) | Made once by the browser and kept in its `localStorage` |
+| `fingerprint` | A hash of network address + browser (never the address itself) | Worked out on the server; recognises the device even after its `deviceId` is cleared |
+| `os` | e.g. Windows 11, Android 14, iOS 17.1 | User-Agent header; Chrome and Edge also send the Windows version |
+| `browser` | e.g. Chrome 131, Safari 17 | User-Agent header |
+| `deviceType` | desktop, tablet or mobile | User-Agent header |
+| `ip` | Network address | The request (`x-forwarded-for` behind a proxy) |
+| `connectionType`, `effectiveType` | e.g. wifi, 4g | The browser's Network Information API, where supported |
+| `country`, `region`, `city` | Rough location | Hosting headers (Vercel; Cloudflare with visitor location headers on). "unknown" when running locally. Nothing is sent to a third party |
+| `lastSeenAt` | When the device was last seen | The server's clock |
+
+Browser hints are checked on the server (short, plain text only); anything else is ignored. Saving the print never blocks signing in.
+
+The IP address and location are personal data (e.g. under India's DPDP Act and the GDPR): say in the app's privacy policy that they are collected, why, and for how long.
+
+## AI prompt limit
+
+The AI is the part that costs money, so each account has an allowance (`src/lib/aiQuota.ts`):
+
+- **10 AI prompts in total** (`AI_PROMPT_LIMIT`), for every AI feature: a chat message, Fix with AI, or reading an uploaded floor plan. After that the AI is off for the account, and the plan can still be built and edited by hand.
+- **One message is one prompt.** When the chat hands a big request to the planner and then runs it step by step, those calls belong to the same message (a "turn" the server opened for it) and are free. A step request without a valid turn of the user's own is refused, so the steps can't be used to get free prompts.
+- **Failures are free.** If the AI was busy, failed or was stopped, the prompt is given back. A floor plan already read before (cached) is free.
+- **New accounts don't reset it.** Prompts are counted per account, per `deviceId` and per device `fingerprint`, and the highest count applies. Signing up again, or clearing the browser's storage, on the same device starts from what that device has already used. Each device may create at most 3 accounts (`MAX_ACCOUNTS_PER_DEVICE`).
+- The counts are kept in the **`usage_counters`** collection, so they survive restarts. The account's count is claimed atomically, so two tabs can't both use the last prompt.
+
+Known limits: someone can still get a new allowance with a different browser on a different network. On a shared network with identical browsers (an office, a hostel), people share one device fingerprint, so one person's prompts count for the others too. Raise `AI_PROMPT_LIMIT` if that matters for your users.
+
+## Admins
+
+An account is an admin when its `role` is `admin` in the `users` collection, or when its email is in **`ADMIN_EMAILS`** in `.env` (comma-separated; such accounts get `role: admin` at their next login). Admins have no AI prompt limit, no accounts-per-device limit, and no per-user AI rate limit. Per-address request limits still apply to everyone. Admin emails are set in `.env` only, never in the code, because this repository is public.
+
+## Rate limits
+
+| What | Limit |
+|---|---|
+| AI requests | `AI_RATE_LIMIT` per `AI_RATE_WINDOW_MIN` per user (default 30 per 10 minutes) |
+| AI routes, before any work | 60 per minute per network address and per device |
+| Plan saves | 60 per minute per account |
+| Chat history | 120 per minute per account |
+| Session checks and renewals | 60 per minute per network address |
+| Logins | 5 per email and 30 per address per 15 minutes |
+| Sign-ups | 5 per address and 3 per device per hour; 3 accounts per device in total |
+
+Limits are kept in the server's memory (`src/lib/rateLimit.ts`), which is right for one server; behind several servers, use a shared store such as Redis. The AI prompt allowance is in the database.
 
 ## Prompt engineering (how the prompts are designed)
 
