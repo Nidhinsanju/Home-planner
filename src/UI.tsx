@@ -25,7 +25,7 @@ export const NavRail = ({
       <div className="nav-rail-top">
         <button
           className="nav-logo-btn"
-          title="Home Planner"
+          title="AI-Home Planner"
           onClick={() => onSelectNav?.('plans')}
         >
           <Home size={22} />
@@ -128,7 +128,7 @@ export const TopBar = ({
     <div className="top-bar">
       <div className="top-bar-left">
         <div className="top-bar-brand">
-          <span className="brand-title">Home Planner</span>
+          <span className="brand-title">AI-Home Planner</span>
           <div className="brand-user-meta">
             <span className="brand-welcome">Welcome, {displayName} 👋</span>
             <span className="brand-tagline">Design • Plan • Visualize • Build</span>

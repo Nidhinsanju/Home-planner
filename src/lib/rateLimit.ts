@@ -41,8 +41,9 @@ export function aiRateLimit(userId: unknown, exempt = false): { ok: true } | { o
 export const REQUEST_LIMITS = {
   save: { limit: 60, windowMs: 60_000 }, // plan saves per account per minute
   chat: { limit: 120, windowMs: 60_000 }, // chat history reads/writes per account per minute
-  session: { limit: 60, windowMs: 60_000 }, // session checks per network address per minute
-  api: { limit: 60, windowMs: 60_000 }, // AI route calls per network address per minute
+  session: { limit: 300, windowMs: 60_000 }, // session checks per network address per minute (a room on one Wi-Fi shares it)
+  api: { limit: 300, windowMs: 60_000 }, // AI route calls per network address per minute (each device: 60, see the routes)
+  apiDevice: { limit: 60, windowMs: 60_000 }, // AI route calls per device per minute
 } as const;
 
 export function requestRateLimit(kind: keyof typeof REQUEST_LIMITS, who: unknown): { ok: true } | { ok: false; error: string; retryAfterSec: number } {

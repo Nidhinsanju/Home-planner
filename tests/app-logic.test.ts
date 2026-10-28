@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { clientAddressOf, rateLimit, REQUEST_LIMITS, requestRateLimit } from '../src/lib/rateLimit';
 import { browserFrom, devicePrint, deviceTypeFrom, fingerprintOf, osFrom } from '../src/lib/devicePrint';
 import { AiCharge, clientRefOf, isAdmin, quotaKeys } from '../src/lib/aiQuota';
+import { signTurn } from '../src/lib/session';
+
+// Turn tokens are signed with SUPER_KEY; the tests use their own.
+process.env.SUPER_KEY ||= 'test-only-secret-'.padEnd(48, 'x');
 import { importPlanJson } from '../src/plan/importPlan';
 import { analyzeVastu } from '../src/plan/vastu';
 import { applyCommands, describePlan } from '../src/plan/commands';
@@ -115,13 +119,22 @@ test('a prompt is counted against the account, the device id and the device prin
   const client = clientRefOf(h);
   assert.equal(client.deviceId, id);
   assert.equal(client.fingerprint, fingerprintOf('203.0.113.7', 'TestBrowser/1.0'));
-  assert.deepEqual(quotaKeys('u1', client), ['ai:user:u1', `ai:device:${id}`, `ai:print:${client.fingerprint}`]);
-  // A second account on the same device shares the device counters.
+  // By default the device id identifies the device (phones on one Wi-Fi don't share counts).
+  assert.deepEqual(quotaKeys('u1', client), ['ai:user:u1', `ai:device:${id}`]);
+  // A second account on the same device shares the device counter.
   assert.deepEqual(quotaKeys('u2', client).slice(1), quotaKeys('u1', client).slice(1));
-  // A made-up device id is ignored; the device print still counts.
+  // A made-up device id is ignored; then the device print counts instead.
   const forged = clientRefOf(new Headers({ 'x-device-id': '../../etc', 'user-agent': 'TestBrowser/1.0' }));
   assert.equal(forged.deviceId, undefined);
-  assert.equal(quotaKeys('u1', forged).length, 2);
+  assert.deepEqual(quotaKeys('u1', forged), ['ai:user:u1', `ai:print:${forged.fingerprint}`]);
+  // Strict mode: the device print counts as well, to catch a cleared browser storage.
+  const saved = process.env.MATCH_DEVICE_BY_NETWORK;
+  process.env.MATCH_DEVICE_BY_NETWORK = 'true';
+  try {
+    assert.deepEqual(quotaKeys('u1', client), ['ai:user:u1', `ai:device:${id}`, `ai:print:${client.fingerprint}`]);
+  } finally {
+    if (saved === undefined) delete process.env.MATCH_DEVICE_BY_NETWORK; else process.env.MATCH_DEVICE_BY_NETWORK = saved;
+  }
 });
 
 test('admins are recognised by role or by ADMIN_EMAILS, and have no prompt limit', async () => {
@@ -151,6 +164,11 @@ test('follow-up AI calls are free only inside a turn the user opened', async () 
     assert.equal(new AiCharge({ fingerprint: 'f' }).join(someone, opener.turn).ok, false); // another user's turn
     assert.equal(new AiCharge({ fingerprint: 'f' }).join(someone, 'not-a-turn').ok, false);
     assert.equal(new AiCharge({ fingerprint: 'f' }).join(someone, undefined).ok, false);
+    // Their own turn is accepted, on any server instance (it is signed, not stored).
+    assert.equal(new AiCharge({ fingerprint: 'f' }).join(someone, signTurn('user-2')).ok, true);
+    // A login token is not a turn token.
+    const { signToken } = await import('../src/lib/session');
+    assert.equal(new AiCharge({ fingerprint: 'f' }).join(someone, signToken('u2@example.com')).ok, false);
   } finally {
     process.env.ADMIN_EMAILS = saved;
   }

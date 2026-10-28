@@ -11,7 +11,7 @@
 - Accounts: email + password. Passwords are hashed with bcrypt (cost 12) and never sent to the browser.
 - Sign-up checks the email format, stores it lower-case, requires 8–128 character passwords, and cleans the name.
 - Login gives the same answer, after the same amount of work, for an unknown email and a wrong password, so it doesn't reveal who has an account.
-- Brute-force protection: at most 5 login attempts per email and 30 per network address per 15 minutes; 5 sign-ups per network address and 3 per device per hour.
+- Brute-force protection: at most 5 login attempts per email and 100 per network address per 15 minutes; 30 sign-ups per network address and 3 per device per hour. The per-address limits are generous because everyone on one Wi-Fi (a demo room, an office) shares one address; the per-email and per-device limits do the real work.
 - Sessions are JWTs signed with `SUPER_KEY` (HS256 only, fixed issuer) that expire after **30 minutes**. While the user works (a click or key press), the app asks for a fresh token at most every 5 minutes (`renewSession`), so active users stay signed in and an idle session ends after 30 minutes. There is no fallback secret, and a key shorter than 32 characters is refused.
 - Every server action and API route checks the token, and users can only read and change their own plans.
 
@@ -45,10 +45,11 @@ The AI is the part that costs money, so each account has an allowance (`src/lib/
 - **10 AI prompts in total** (`AI_PROMPT_LIMIT`), for every AI feature: a chat message, Fix with AI, or reading an uploaded floor plan. After that the AI is off for the account, and the plan can still be built and edited by hand.
 - **One message is one prompt.** When the chat hands a big request to the planner and then runs it step by step, those calls belong to the same message (a "turn" the server opened for it) and are free. A step request without a valid turn of the user's own is refused, so the steps can't be used to get free prompts.
 - **Failures are free.** If the AI was busy, failed or was stopped, the prompt is given back. A floor plan already read before (cached) is free.
-- **New accounts don't reset it.** Prompts are counted per account, per `deviceId` and per device `fingerprint`, and the highest count applies. Signing up again, or clearing the browser's storage, on the same device starts from what that device has already used. Each device may create at most 3 accounts (`MAX_ACCOUNTS_PER_DEVICE`).
+- **New accounts don't reset it.** Prompts are counted per account and per device (`deviceId`), and the higher count applies. Signing up again in the same browser starts from what that device has already used. Each device may create at most 3 accounts (`MAX_ACCOUNTS_PER_DEVICE`). When the browser sends no device id (storage blocked), the device `fingerprint` is used instead.
+- **Strict mode** (`MATCH_DEVICE_BY_NETWORK=true`): the `fingerprint` counts as well, which also catches someone who clears the browser's storage or uses a private window on the same network. It is off by default because phones on one Wi-Fi often share an address and, with Chrome's reduced User-Agent, the same browser string, so they would share one allowance.
 - The counts are kept in the **`usage_counters`** collection, so they survive restarts. The account's count is claimed atomically, so two tabs can't both use the last prompt.
 
-Known limits: someone can still get a new allowance with a different browser on a different network. On a shared network with identical browsers (an office, a hostel), people share one device fingerprint, so one person's prompts count for the others too. Raise `AI_PROMPT_LIMIT` if that matters for your users.
+Known limits: by default, a private window or cleared browser storage gets a new device id, and so a new allowance once a new account is made (still at most 3 accounts per device id, and per address limits apply). Strict mode closes that gap at the cost of shared-network collisions. A different browser on a different network always looks like a new device.
 
 ## Admins
 
@@ -59,14 +60,14 @@ An account is an admin when its `role` is `admin` in the `users` collection, or 
 | What | Limit |
 |---|---|
 | AI requests | `AI_RATE_LIMIT` per `AI_RATE_WINDOW_MIN` per user (default 30 per 10 minutes) |
-| AI routes, before any work | 60 per minute per network address and per device |
+| AI routes, before any work | 300 per minute per network address; 60 per minute per device |
 | Plan saves | 60 per minute per account |
 | Chat history | 120 per minute per account |
-| Session checks and renewals | 60 per minute per network address |
-| Logins | 5 per email and 30 per address per 15 minutes |
-| Sign-ups | 5 per address and 3 per device per hour; 3 accounts per device in total |
+| Session checks and renewals | 300 per minute per network address |
+| Logins | 5 per email and 100 per address per 15 minutes |
+| Sign-ups | 30 per address and 3 per device per hour; 3 accounts per device in total |
 
-Limits are kept in the server's memory (`src/lib/rateLimit.ts`), which is right for one server; behind several servers, use a shared store such as Redis. The AI prompt allowance is in the database.
+Limits are kept in the server's memory (`src/lib/rateLimit.ts`). On Vercel each serverless instance has its own memory, so these limits are per instance and reset when one restarts; for strict limits use a shared store such as Redis (e.g. Upstash). The AI prompt allowance and the accounts-per-device count are in the database, so they hold on every instance, and the planner's "turn" is a signed token, not memory.
 
 ## Prompt engineering (how the prompts are designed)
 
