@@ -25,8 +25,17 @@ function toJpeg(img: HTMLImageElement, maxSide: number) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
   ctx.drawImage(img, 0, 0, width, height);
-  return { image: canvas.toDataURL('image/jpeg', 0.85), width, height };
+  // Small enough to send: the host refuses requests over 4.5 MB (Vercel), and a save or a
+  // chat message carries the image plus the plan. A busy scan is compressed a little more.
+  let image = '';
+  for (const quality of [0.85, 0.75, 0.65, 0.55]) {
+    image = canvas.toDataURL('image/jpeg', quality);
+    if (image.length <= MAX_IMAGE_CHARS) break;
+  }
+  return { image, width, height };
 }
+
+const MAX_IMAGE_CHARS = 3_000_000; // ~2.2 MB of JPEG as a data URL
 
 export async function loadBackgroundImage(file: File): Promise<{ src: string; aspect: number }> {
   if (!/^image\/(png|jpeg|webp|gif|bmp)$/.test(file.type)) {

@@ -175,9 +175,19 @@ export async function withModels<T>(kind: string, request: (model: string) => Pr
   const now = Date.now();
   const order = [...models.filter(m => (skipUntil.get(m) ?? 0) <= now), ...models.filter(m => (skipUntil.get(m) ?? 0) > now)];
   let lastError: unknown;
+  // No new attempt starts after AI_TOTAL_SEC (default 170): with one more attempt of up to
+  // AI_TIMEOUT_SEC (120) the request still ends before the host's limit (300s on Vercel), so
+  // the user always gets an answer instead of a cut-off connection.
+  const started = Date.now();
+  const outOfTime = () => Date.now() - started > positive(process.env.AI_TOTAL_SEC, 170) * 1000;
+  let timedOut = false;
   for (let round = 0; ; round++) {
     let busy = 0;
     for (const model of order) {
+      if (lastError && outOfTime()) {
+        timedOut = true;
+        break;
+      }
       try {
         const result = await request(model);
         skipUntil.delete(model);
@@ -195,13 +205,15 @@ export async function withModels<T>(kind: string, request: (model: string) => Pr
         reportAiStatus({ level: 'warning', message: order.length > 1 ? `AI model ${n} of ${order.length} ${what}${left ? ', trying the next one…' : '.'}` : `The AI model ${what}.` });
       }
     }
+    if (timedOut) break;
     if (busy < order.length || lastError instanceof TryNextModel) throw lastError;
-    if (round >= BUSY_WAITS_MS.length) break;
+    if (round >= BUSY_WAITS_MS.length || outOfTime()) break;
     const ms = Math.min(Math.max(BUSY_WAITS_MS[round], retryAfterMs(lastError)), BUSY_WAITS_MS[BUSY_WAITS_MS.length - 1]);
     console.warn(`[ai] ${kind}: every model is busy; asking again in ${ms / 1000}s`);
     reportAiStatus({ level: 'warning', message: `Every AI model is busy right now. Trying again in ${Math.round(ms / 1000)}s… (attempt ${round + 2} of ${BUSY_WAITS_MS.length + 1})` });
     await pause(ms, signal);
   }
+  if (timedOut && !isBusyError(lastError)) throw lastError;
   console.warn(`[ai] ${kind}: every model in .env (${order.length}) is still busy${order.length === 1 ? '; AI_FALLBACK_MODELS would give it others to try' : ''}`);
   reportAiStatus({ level: 'error', message: BUSY_MESSAGE });
   throw new AllModelsBusy(BUSY_MESSAGE);

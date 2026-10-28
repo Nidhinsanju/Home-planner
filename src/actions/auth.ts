@@ -59,7 +59,7 @@ export async function login(formData: FormData) {
   const { email, password } = parsed.data;
   const ip = await clientAddress();
   const byEmail = rateLimit(`login:${email}`, 5, 15 * MINUTE);
-  const byIp = rateLimit(`login-ip:${ip}`, 30, 15 * MINUTE);
+  const byIp = rateLimit(`login-ip:${ip}`, 100, 15 * MINUTE);
   if (!byEmail.ok || !byIp.ok) return { error: `Too many login attempts. Try again in ${Math.ceil(Math.max(byEmail.retryAfterSec, byIp.retryAfterSec) / 60)} minute(s).` };
 
   await connectToDatabase();
@@ -79,7 +79,7 @@ export async function signup(formData: FormData) {
   const parsed = SignupInput.safeParse({ email: field(formData, 'email'), password: field(formData, 'password'), name: field(formData, 'name') });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? 'Check your details and try again.' };
   const { email, password, name } = parsed.data;
-  const limited = rateLimit(`signup-ip:${await clientAddress()}`, 5, 60 * MINUTE);
+  const limited = rateLimit(`signup-ip:${await clientAddress()}`, 30, 60 * MINUTE);
   if (!limited.ok) return { error: 'Too many sign-ups from this network. Try again later.' };
   // One device can't make new accounts to get more AI prompts (see aiQuota.ts).
   const hints = hintsField(formData);

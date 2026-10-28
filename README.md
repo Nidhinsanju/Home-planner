@@ -1,4 +1,4 @@
-# Vastu 3D Visualizer
+# AI-Home Planner
 
 Upload a floor plan, get an accurate 2D/3D model and a Vastu report, then fix it by chatting with an AI.
 
@@ -49,6 +49,16 @@ AI_API_KEY=sk-or-...         AI_MODEL=<provider/model>
 # Ollama on your computer (free, no key)
 AI_BASE_URL=http://localhost:11434/v1    AI_MODEL=<a vision model you pulled, e.g. a llama vision model>
 ```
+
+## Deploy to Vercel (demo)
+
+1. **Database:** create a free MongoDB Atlas cluster. Under *Network Access*, allow `0.0.0.0/0` (Vercel's addresses change), and copy the connection string.
+2. **Import the repo** in Vercel (framework: Next.js; build and start commands as detected).
+3. **Environment variables** (Project → Settings → Environment Variables): everything from your `.env`. `.env` itself is not uploaded. At least `MONGODB_URI`, `SUPER_KEY`, `AI_API_KEY`, `AI_MODEL`, and `ADMIN_EMAILS` for your own account. Add `AI_FALLBACK_MODELS` so a busy model has others to fall back on.
+4. **Function time:** the AI routes ask for up to 300 seconds (`maxDuration`). That needs Fluid compute, which new projects have on (Settings → Functions). If a deploy is refused because of `maxDuration`, turn Fluid compute on.
+5. **Check after deploying:** sign up, send a chat message, upload a floor plan, press *Fix with AI*. In Atlas, `user_devices` should show your device with country and city, and `usage_counters` the prompts used.
+
+Limits to know on the free plan: requests over 4.5 MB are refused (uploaded images are compressed to fit), and the per-minute rate limits are per server instance (see [SECURITY.md](SECURITY.md)). The 10-prompt allowance is in the database and always applies.
 
 ## How the AI part is built to work with any model
 

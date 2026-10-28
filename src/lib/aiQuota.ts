@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import { connectToDatabase, UsageCounter } from './db';
+import { signTurn, verifyTurn } from './session';
 import { fingerprintOf, isDeviceId } from './devicePrint';
 import { clientAddressOf } from './rateLimit';
 import { reportAiStatus } from './aiClient';
@@ -41,11 +41,19 @@ const adminEmails = () => (process.env.ADMIN_EMAILS ?? '').split(',').map(s => s
 export const isAdminEmail = (email: unknown) => adminEmails().includes(String(email ?? '').trim().toLowerCase());
 export const isAdmin = (user: { role?: unknown; email?: unknown } | null | undefined) => !!user && (user.role === 'admin' || isAdminEmail(user.email));
 
+// Whether the device print (network address + browser) also identifies a device when the
+// browser sent its id. Off by default: on shared Wi-Fi (a demo room, an office) many phones
+// share one address and, with Chrome's reduced User-Agent, the same browser string, so they
+// would share one allowance. With it off, the print only counts when there is no device id
+// (storage blocked). MATCH_DEVICE_BY_NETWORK=true turns it on, to also catch someone who
+// clears their browser storage, at the cost of those shared-network collisions.
+const byNetwork = (client: ClientRef) => !client.deviceId || /^(1|true|on|yes)$/i.test(process.env.MATCH_DEVICE_BY_NETWORK ?? '');
+
 // The counters a prompt is counted against: the account first, then the device.
 export function quotaKeys(userId: unknown, client: ClientRef): string[] {
-  return [`ai:user:${String(userId)}`, ...(client.deviceId ? [`ai:device:${client.deviceId}`] : []), `ai:print:${client.fingerprint}`];
+  return [`ai:user:${String(userId)}`, ...(client.deviceId ? [`ai:device:${client.deviceId}`] : []), ...(byNetwork(client) ? [`ai:print:${client.fingerprint}`] : [])];
 }
-const accountKeys = (client: ClientRef) => [...(client.deviceId ? [`accounts:device:${client.deviceId}`] : []), `accounts:print:${client.fingerprint}`];
+const accountKeys = (client: ClientRef) => [...(client.deviceId ? [`accounts:device:${client.deviceId}`] : []), ...(byNetwork(client) ? [`accounts:print:${client.fingerprint}`] : [])];
 
 async function highest(keys: string[]) {
   await connectToDatabase();
@@ -61,20 +69,10 @@ const bump = (keys: string[], by: 1 | -1) => UsageCounter.bulkWrite(keys.map(key
 // ---- turns -----------------------------------------------------------------------------------
 
 // One prompt can take several AI calls: the chat model, the planner, then one call per step.
-// The first call uses up the prompt and opens a "turn"; the follow-up calls show the turn's id
-// and are free. A turn lasts 15 minutes and covers at most 40 calls. Kept in memory, like the
-// rate limiter (one server process).
-const TURN_MS = 15 * 60_000;
-const TURN_CALLS = 40;
-const turns = new Map<string, { userId: string; expires: number; calls: number }>();
-
-function openTurn(userId: unknown) {
-  const now = Date.now();
-  if (turns.size > 10_000) for (const [k, t] of turns) if (t.expires < now) turns.delete(k);
-  const id = randomUUID();
-  turns.set(id, { userId: String(userId), expires: now + TURN_MS, calls: 0 });
-  return id;
-}
+// The first call uses up the prompt and opens a "turn": a signed token for this user, valid
+// for 15 minutes (session.ts). The follow-up calls show it and are free. Signed rather than
+// stored, so it works whichever server instance gets the call.
+const openTurn = (userId: unknown) => signTurn(userId);
 
 // ---- charging --------------------------------------------------------------------------------
 
@@ -116,11 +114,9 @@ export class AiCharge {
   // A follow-up call of a prompt already paid for (the planner, a step).
   join(user: { _id: unknown; role?: unknown; email?: unknown }, turnId: unknown): Paid {
     if (isAdmin(user)) return { ok: true };
-    const t = typeof turnId === 'string' ? turns.get(turnId) : undefined;
-    if (!t || t.userId !== String(user._id) || t.expires < Date.now() || t.calls >= TURN_CALLS) {
+    if (!verifyTurn(turnId, user._id)) {
       return { ok: false, error: 'This request is not part of a message you sent, so the AI did not run. Send your message again.' };
     }
-    t.calls++;
     return { ok: true };
   }
 
