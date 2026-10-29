@@ -1388,6 +1388,68 @@ fieldset.plain {
   background: var(--brand-blue-hover);
 }
 
+.auth-btn:disabled {
+  cursor: progress;
+  opacity: 0.85;
+}
+
+.auth-btn:disabled:hover {
+  background: var(--brand-blue);
+}
+
+.auth-form fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.auth-form fieldset:disabled input {
+  opacity: 0.7;
+}
+
+/* Spinner in the Sign In / Sign Up button and on the loading screen (AuthLoader.tsx). */
+.auth-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  vertical-align: -3px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: auth-spin 0.7s linear infinite;
+}
+
+.auth-spinner-lg {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  border-width: 3px;
+  border-color: var(--brand-blue-border);
+  border-top-color: var(--brand-blue);
+}
+
+/* Fades in only after a short wait, so fast checks don't flash a spinner. */
+.auth-loader {
+  opacity: 0;
+  animation: auth-fade-in 0.2s ease 0.3s forwards;
+}
+
+.auth-message {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-body);
+}
+
+@keyframes auth-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes auth-fade-in {
+  to { opacity: 1; }
+}
+
 .auth-footer {
   margin-top: 20px;
   text-align: center;

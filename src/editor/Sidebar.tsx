@@ -33,8 +33,8 @@ interface Props {
   onSwitchPlan: (i: 0 | 1 | 2) => void;
   wallDims: { thickness: number; height: number };
   setWallDims: (d: { thickness: number; height: number }) => void;
-  activeNav?: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export';
-  setActiveNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
+  activeNav?: 'plans' | 'vastu' | 'settings' | 'templates' | 'export';
+  setActiveNav?: (nav: 'plans' | 'vastu' | 'settings' | 'templates' | 'export') => void;
   onImportPlan?: (text: string) => Promise<{ message: string; notes: string[] }>;
   vastu?: VastuReport | null;
   onFixWithAI?: () => Promise<string[]>;
