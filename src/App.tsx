@@ -100,7 +100,7 @@ function App({ initialUser }: any) {
   const [wallDims, setWallDims] = useState({ ...WALL_DEFAULTS });
   const [cutaway, setCutaway] = useState(true);
   const [rotation, setRotation] = useState(0);
-  const [activeNav, setActiveNav] = useState<'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export'>('plans');
+  const [activeNav, setActiveNav] = useState<'plans' | 'vastu' | 'settings' | 'templates' | 'export'>('plans');
   const [panState, setPanState] = useState({ up: false, down: false, left: false, right: false });
   const [, forceRender] = useState(0);
 

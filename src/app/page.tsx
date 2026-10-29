@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import App from '../App';
 import Login from '../Login';
+import AuthLoader from '../AuthLoader';
 import { getUserFromToken } from '../actions/auth';
 import { deviceHints } from '../lib/deviceHints';
 
@@ -11,36 +12,37 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    const checkToken = async () => {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        setLoading(false);
-        return;
-      }
-      const data = await getUserFromToken(token, await deviceHints());
-      if (data && 'rateLimited' in data) {
-        setBusy(true); // too many checks from this network: keep the token, ask to reload later
-      } else if (data) {
-        setUser(data);
-      } else {
-        localStorage.removeItem('token');
-      }
-      setLoading(false);
-    };
-    checkToken();
+  // Loads the user for the saved token. Returns false when there is no valid token.
+  const loadUser = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return false;
+    const data = await getUserFromToken(token, await deviceHints());
+    if (data && 'rateLimited' in data) {
+      setBusy(true); // too many checks from this network: keep the token, ask to reload later
+      return true;
+    }
+    if (data) {
+      setUser(data);
+      return true;
+    }
+    localStorage.removeItem('token');
+    return false;
   }, []);
 
+  useEffect(() => {
+    loadUser().catch(() => false).finally(() => setLoading(false));
+  }, [loadUser]);
+
   if (loading) {
-    return <div style={{ background: '#17191d', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff' }}>Loading...</div>;
+    return <AuthLoader />;
   }
-  
+
   if (busy) {
-    return <div style={{ background: '#17191d', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff' }}>Too many requests from your network. Please wait a minute and reload the page.</div>;
+    return <AuthLoader message="Too many requests from your network. Please wait a minute and reload the page." />;
   }
 
   if (!user) {
-    return <Login />;
+    return <Login onSignedIn={loadUser} />;
   }
 
   return <App initialUser={user} />;

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Undo2, Redo2, Layers, Box, Bookmark, Trash2, ChevronDown, LogOut,
-  Home, LayoutGrid, Boxes, Settings, LayoutTemplate, Upload, Sun,
+  Home, LayoutGrid, Settings, LayoutTemplate, Upload, Sun,
   Sparkles, Send, Compass as CompassIcon
 } from 'lucide-react';
 import { getChatHistory, clearChatHistory, saveChatTurn } from './actions/chat';
@@ -17,8 +17,8 @@ export const NavRail = ({
   activeNav = 'plans',
   onSelectNav,
 }: {
-  activeNav?: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export';
-  onSelectNav?: (nav: 'plans' | 'rooms' | 'vastu' | 'settings' | 'templates' | 'export') => void;
+  activeNav?: 'plans' | 'vastu' | 'settings' | 'templates' | 'export';
+  onSelectNav?: (nav: 'plans' | 'vastu' | 'settings' | 'templates' | 'export') => void;
 }) => {
   return (
     <aside className="nav-rail">
@@ -42,17 +42,6 @@ export const NavRail = ({
             <LayoutGrid size={20} />
           </div>
           <span className="nav-item-label">Plans</span>
-        </button>
-
-        <button
-          className={`nav-item-btn ${activeNav === 'rooms' ? 'active' : ''}`}
-          onClick={() => onSelectNav?.('rooms')}
-          title="Rooms"
-        >
-          <div className="nav-item-icon-box">
-            <Boxes size={20} />
-          </div>
-          <span className="nav-item-label">Rooms</span>
         </button>
 
         <button

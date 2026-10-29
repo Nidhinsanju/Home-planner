@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Signup from '../../Signup';
+import AuthLoader from '../../AuthLoader';
 import { useRouter } from 'next/navigation';
 
 export default function SignupPage() {
@@ -11,13 +12,13 @@ export default function SignupPage() {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      router.push('/');
+      router.replace('/');
     } else {
       setLoading(false);
     }
   }, [router]);
 
-  if (loading) return <div style={{ background: '#17191d', height: '100vh' }}></div>;
-  
+  if (loading) return <AuthLoader />;
+
   return <Signup />;
 }
